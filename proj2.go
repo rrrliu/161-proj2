@@ -32,12 +32,11 @@ import (
 	// Optional. You can remove the "_" there, but please do not touch
 	// anything else within the import bracket.
 	_ "strconv"
-
 	// if you are looking for fmt, we don't give you fmt, but you can use userlib.DebugMsg.
 	// see someUsefulThings() below:
 )
 
-// This serves two purposes: 
+// This serves two purposes:
 // a) It shows you some useful primitives, and
 // b) it suppresses warnings for items not being imported.
 // Of course, this function can be deleted.
@@ -68,7 +67,7 @@ func someUsefulThings() {
 	// And a random RSA key.  In this case, ignoring the error
 	// return value
 	var pk userlib.PKEEncKey
-        var sk userlib.PKEDecKey
+	var sk userlib.PKEDecKey
 	pk, sk, _ = userlib.PKEKeyGen()
 	userlib.DebugMsg("Key is %v, %v", pk, sk)
 }
@@ -85,7 +84,7 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 // The structure definition for a user record
 type User struct {
 	Username string
-
+	Password string
 	// You can add other fields here if you want...
 	// Note for JSON to marshal/unmarshal, the fields need to
 	// be public (start with a capital letter)
@@ -104,32 +103,54 @@ type User struct {
 // keystore and the datastore functions in the userlib library.
 
 // You can assume the password has strong entropy, EXCEPT
-// the attackers may possess a precomputed tables containing 
+// the attackers may possess a precomputed tables containing
 // hashes of common passwords downloaded from the internet.
 func InitUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
 	userdataptr = &userdata
 
-	//TODO: This is a toy implementation.
 	userdata.Username = username
-	//End of toy implementation
+	userdata.Password = password
 
+	UUID := bytesToUUID(Hash(username))
+	salt := userlib.RandomBytes(16)
+	adjpassword := append([]byte(password), make([]byte, 16)...)
+	value, err := userlib.HMACEval(adjpassword[:16], append(salt, password...))
+	data := append(salt, value...)
+	userlib.DatastoreSet(UUID, data)
 	return &userdata, nil
+}
+
+func Hash(message string) []byte {
+	hash, _ := userlib.HMACEval(make([]byte, 16), []byte(message))
+	return hash
 }
 
 // This fetches the user information from the Datastore.  It should
 // fail with an error if the user/password is invalid, or if the user
 // data was corrupted, or if the user can't be found.
 func GetUser(username string, password string) (userdataptr *User, err error) {
-	var userdata User
-	userdataptr = &userdata
-
-	return userdataptr, nil
+	UUID := bytesToUUID(Hash(username))
+	userentry, exists := userlib.DatastoreGet(UUID)
+	if !exists {
+		return nil, errors.New("user does not exist")
+	}
+	adjpassword := append([]byte(password), make([]byte, 16)...)
+	print(adjpassword)
+	validation, _ := userlib.HMACEval([]byte(adjpassword)[:16], append(userentry[:16], password...))
+	if userlib.HMACEqual(userentry[16:], validation) {
+		var userdata User
+		userdataptr = &userdata
+		userdata.Username = username
+		userdata.Password = password
+		return userdataptr, nil
+	}
+	return nil, errors.New("invalid username/password, or user data was corrupted")
 }
 
 // This stores a file in the datastore.
 //
-// The plaintext of the filename + the plaintext and length of the filename 
+// The plaintext of the filename + the plaintext and length of the filename
 // should NOT be revealed to the datastore!
 func (userdata *User) StoreFile(filename string, data []byte) {
 
