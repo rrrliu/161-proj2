@@ -114,25 +114,13 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 
 	UUID := bytesToUUID(Hash([]byte(username)))
 	salt := userlib.RandomBytes(16)
-	value := Hash(append(salt, password...))
-	data := append(salt, value...)
-	for _, n := range salt {
-		print(n)
-	}
-	print("\n")
-	for _, n := range password {
-		print(n)
-	}
-	print("\n")
-	for _, n := range value {
-		print(n)
-	}
-	print("\n")
+	data := Hash(append(salt, password...))
+	value := append(salt, data...)
 
-	adjpassword := append([]byte(password), make([]byte, 16)...)
-	mac, err := userlib.HMACEval(adjpassword[:16], data)
+	macKey := userlib.Argon2Key([]byte(password), salt, 16)
+	mac, _ := userlib.HMACEval(macKey, value)
 
-	userlib.DatastoreSet(UUID, append(mac, data...))
+	userlib.DatastoreSet(UUID, append(mac, value...))
 	return &userdata, nil
 }
 
@@ -151,18 +139,18 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 		return nil, errors.New("user does not exist")
 	}
 	mac := userentry[:64]
-	data := userentry[64:]
-	adjpassword := append([]byte(password), make([]byte, 16)...)
-	validation, _ := userlib.HMACEval(adjpassword[:16], data)
+	value := userentry[64:]
+	salt := value[:16]
+	macKey := userlib.Argon2Key([]byte(password), salt, 16)
+	validation, _ := userlib.HMACEval(macKey, value)
 
 	if !userlib.HMACEqual(mac, validation) {
 		return nil, errors.New("data has been corrupted")
 	}
 
-	salt := data[:16]
-	value := data[16:]
+	data := value[16:]
 	// this part is not working even though they are same when we print
-	if userlib.HMACEqual(value, Hash(append(salt, password...))) {
+	if userlib.HMACEqual(data, Hash(append(salt, password...))) {
 		var userdata User
 		userdataptr = &userdata
 		userdata.Username = username
@@ -173,6 +161,14 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	return nil, errors.New("invalid password")
 }
 
+func printSlice(slice []byte) {
+	print("Length:", len(slice), "\n")
+	for _, n := range slice {
+		print(n)
+	}
+	print("\n")
+}
+
 // This stores a file in the datastore.
 //
 // The plaintext of the filename + the plaintext and length of the filename
@@ -180,15 +176,33 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 func (userdata *User) StoreFile(filename string, data []byte) {
 
 	//TODO: This is a toy implementation.
-	// UUID := bytesToUUID(Hash(append([]byte(userdata.Username), filename...)))
-	// salt := userlib.RandomBytes(16)
+	username := []byte(userdata.Username)
+	password := []byte(userdata.Password)
 
-	// k, err := userlib.HMACEval(salt, append([]byte(userdata.Password), salt...))
+	UUID := bytesToUUID(Hash(append(username, filename...)))
+	salt := userlib.RandomBytes(16)
+	k, err := userlib.HMACEval(salt, append(salt, password...))
+	k = k[:16]
+	if err != nil {
+		panic(err)
+	}
 
-	// packaged_data, _ := json.Marshal(data)
-	// userlib.DatastoreSet(UUID, packaged_data)
+	iv := userlib.RandomBytes(16)
+	encryptedData := userlib.SymEnc(k, iv, data)
+	value := append(salt, encryptedData...)
+
+	newKey, err := userlib.HashKDF(k, []byte("mac"))
+	if err != nil {
+		panic(err)
+	}
+	macKey := newKey[:16]
+	mac, err := userlib.HMACEval(macKey, data)
+	if err != nil {
+		panic(err)
+	}
+	userlib.DatastoreSet(UUID, append(mac, value...))
+	printSlice(append(mac, value...))
 	//End of toy implementation
-
 	return
 }
 
@@ -207,14 +221,42 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 func (userdata *User) LoadFile(filename string) (data []byte, err error) {
 
 	//TODO: This is a toy implementation.
-	UUID, _ := uuid.FromBytes([]byte(filename + userdata.Username)[:16])
-	packaged_data, ok := userlib.DatastoreGet(UUID)
-	if !ok {
-		return nil, errors.New(strings.ToTitle("File not found!"))
+	username := []byte(userdata.Username)
+	password := []byte(userdata.Password)
+
+	UUID := bytesToUUID(Hash(append(username, filename...)))
+	entry, exists := userlib.DatastoreGet(UUID)
+	if !exists {
+		return nil, errors.New("file does not exist")
 	}
-	json.Unmarshal(packaged_data, &data)
-	return data, nil
-	//End of toy implementation
+
+	mac := entry[:64]
+	value := entry[64:]
+	salt := value[:16]
+	encryptedData := value[16:]
+
+	k, err := userlib.HMACEval(salt, append(salt, password...))
+	k = k[:16]
+	if err != nil {
+		panic(err)
+	}
+	data = userlib.SymDec(k, encryptedData)
+
+	newKey, err := userlib.HashKDF(k, []byte("mac"))
+	if err != nil {
+		panic(err)
+	}
+	macKey := newKey[:16]
+	validation, err := userlib.HMACEval(macKey, data)
+	if err != nil {
+		panic(err)
+	}
+	printSlice(salt)
+	printSlice(encryptedData)
+	printSlice(value)
+	if !userlib.HMACEqual(mac, validation) {
+		return nil, errors.New("data has been corrupted")
+	}
 
 	return
 }
