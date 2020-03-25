@@ -104,7 +104,7 @@ type User struct {
 
 // You can assume the password has strong entropy, EXCEPT
 // the attackers may possess a precomputed tables containing
-// hashes of common passwords downloaded from the internet.
+// Hashes of common passwords downloaded from the internet.
 func InitUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
 	userdataptr = &userdata
@@ -112,17 +112,32 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	userdata.Username = username
 	userdata.Password = password
 
-	UUID := bytesToUUID(Hash(username))
+	UUID := bytesToUUID(Hash([]byte(username)))
 	salt := userlib.RandomBytes(16)
-	adjpassword := append([]byte(password), make([]byte, 16)...)
-	value, err := userlib.HMACEval(adjpassword[:16], append(salt, password...))
+	value := Hash(append(salt, password...))
 	data := append(salt, value...)
-	userlib.DatastoreSet(UUID, data)
+	for _, n := range salt {
+		print(n)
+	}
+	print("\n")
+	for _, n := range password {
+		print(n)
+	}
+	print("\n")
+	for _, n := range value {
+		print(n)
+	}
+	print("\n")
+
+	adjpassword := append([]byte(password), make([]byte, 16)...)
+	mac, err := userlib.HMACEval(adjpassword[:16], data)
+
+	userlib.DatastoreSet(UUID, append(mac, data...))
 	return &userdata, nil
 }
 
-func Hash(message string) []byte {
-	hash, _ := userlib.HMACEval(make([]byte, 16), []byte(message))
+func Hash(message []byte) []byte {
+	hash, _ := userlib.HMACEval(make([]byte, 16), message)
 	return hash
 }
 
@@ -130,22 +145,32 @@ func Hash(message string) []byte {
 // fail with an error if the user/password is invalid, or if the user
 // data was corrupted, or if the user can't be found.
 func GetUser(username string, password string) (userdataptr *User, err error) {
-	UUID := bytesToUUID(Hash(username))
+	UUID := bytesToUUID(Hash([]byte(username)))
 	userentry, exists := userlib.DatastoreGet(UUID)
 	if !exists {
 		return nil, errors.New("user does not exist")
 	}
+	mac := userentry[:64]
+	data := userentry[64:]
 	adjpassword := append([]byte(password), make([]byte, 16)...)
-	print(adjpassword)
-	validation, _ := userlib.HMACEval([]byte(adjpassword)[:16], append(userentry[:16], password...))
-	if userlib.HMACEqual(userentry[16:], validation) {
+	validation, _ := userlib.HMACEval(adjpassword[:16], data)
+
+	if !userlib.HMACEqual(mac, validation) {
+		return nil, errors.New("data has been corrupted")
+	}
+
+	salt := data[:16]
+	value := data[16:]
+	// this part is not working even though they are same when we print
+	if userlib.HMACEqual(value, Hash(append(salt, password...))) {
 		var userdata User
 		userdataptr = &userdata
 		userdata.Username = username
 		userdata.Password = password
 		return userdataptr, nil
 	}
-	return nil, errors.New("invalid username/password, or user data was corrupted")
+
+	return nil, errors.New("invalid password")
 }
 
 // This stores a file in the datastore.
@@ -155,9 +180,13 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 func (userdata *User) StoreFile(filename string, data []byte) {
 
 	//TODO: This is a toy implementation.
-	UUID, _ := uuid.FromBytes([]byte(filename + userdata.Username)[:16])
-	packaged_data, _ := json.Marshal(data)
-	userlib.DatastoreSet(UUID, packaged_data)
+	// UUID := bytesToUUID(Hash(append([]byte(userdata.Username), filename...)))
+	// salt := userlib.RandomBytes(16)
+
+	// k, err := userlib.HMACEval(salt, append([]byte(userdata.Password), salt...))
+
+	// packaged_data, _ := json.Marshal(data)
+	// userlib.DatastoreSet(UUID, packaged_data)
 	//End of toy implementation
 
 	return
