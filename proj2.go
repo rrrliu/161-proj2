@@ -248,7 +248,7 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 	salt := userlib.RandomBytes(16)
 
 	var file [][]byte
-	// file = append(file, []byte{OWNED})
+	file = append(file, []byte{OWNED})
 	file = append(file, salt)
 
 	fileToBytes, err := json.Marshal(file)
@@ -265,14 +265,13 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 // Append should be efficient, you shouldn't rewrite or reencrypt the
 // existing file, but only whatever additional information and
 // metadata you need.
-
 func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 
 	username := []byte(userdata.Username)
 	password := []byte(userdata.Password)
 
-	UUID := bytesToUUID(hash(append(username, filename...)))
-	entry, exists := userlib.DatastoreGet(UUID)
+	uuid := bytesToUUID(hash(append(username, filename...)))
+	entry, exists := userlib.DatastoreGet(uuid)
 	if !exists {
 		return errors.New("file does not exist")
 	}
@@ -282,17 +281,53 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 		return err
 	}
 
-	// if file[0][0] == SHARED {
-	// 	AppendFile()
-	// }
+	owned := true
 
-	salt := file[0]
-	k, err := userlib.HMACEval(salt, append(salt, password...))
-	k = k[:16]
-	if err != nil {
-		return err
+	for file[0][0] != SHARED {
+		owned = false
+		uuid := bytesToUUID(file[1])
+		entry, exists := userlib.DatastoreGet(uuid)
+		if !exists {
+			return errors.New("file does not exist")
+		}
+		var file [][]byte
+		err = json.Unmarshal(entry, &file)
+		if err != nil {
+			return err
+		}
 	}
 
+	// determine the k value
+	// we need a flag to determine if the person owns the file or not, which we'll change in the loop above
+	// if not owned file, then calculate k by decrypting with private key
+	// otherwise calculate k as below
+	// then run the helper
+	if owned {
+		salt := file[1]
+		k, err := userlib.HMACEval(salt, append(salt, password...))
+		k = k[:16]
+		if err != nil {
+			return err
+		}
+		return appendHelper(file, k, uuid)
+
+	} else {
+		// PROBLEM: Our specifier requires knowledge of the file owner, but we cannot obtain that information here
+		// As such, we must change the format of our specifier/index where we store SymEnc(pk, k)
+
+		// recipientKey := userdata.PrivateKey
+		// specifier := [][]byte{username, []byte(username), []byte(filename)}
+		// index, err := json.Marshal(specifier)
+		// if err != nil {
+		// 	return err
+		// }
+	}
+	return err
+}
+
+func appendHelper(file [][]byte, k []byte, uuid uuid.UUID) (err error) {
+
+	data := file[2]
 	iv := userlib.RandomBytes(16)
 	encryptedData := userlib.SymEnc(k, iv, data)
 
@@ -313,7 +348,7 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 		return err
 	}
 
-	userlib.DatastoreSet(UUID, fileToBytes)
+	userlib.DatastoreSet(uuid, fileToBytes)
 
 	return nil
 }
