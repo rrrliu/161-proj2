@@ -248,7 +248,7 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 	salt := userlib.RandomBytes(16)
 
 	var file [][]byte
-	// file = append(file, []byte{OWNED})
+	file = append(file, []byte{OWNED})
 	file = append(file, salt)
 
 	fileToBytes, err := json.Marshal(file)
@@ -265,14 +265,13 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 // Append should be efficient, you shouldn't rewrite or reencrypt the
 // existing file, but only whatever additional information and
 // metadata you need.
-
 func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 
 	username := []byte(userdata.Username)
 	password := []byte(userdata.Password)
 
-	UUID := bytesToUUID(hash(append(username, filename...)))
-	entry, exists := userlib.DatastoreGet(UUID)
+	uuid := bytesToUUID(hash(append(username, filename...)))
+	entry, exists := userlib.DatastoreGet(uuid)
 	if !exists {
 		return errors.New("file does not exist")
 	}
@@ -282,17 +281,55 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 		return err
 	}
 
-	// if file[0][0] == SHARED {
-	// 	AppendFile()
-	// }
+	owned := true
 
-	salt := file[0]
-	k, err := userlib.HMACEval(salt, append(salt, password...))
-	k = k[:16]
-	if err != nil {
-		return err
+	// this loop will no longer be necessary with proper indexing--read comment in ReceiveFile
+	for file[0][0] != SHARED {
+		owned = false
+		uuid := bytesToUUID(file[1])
+		entry, exists := userlib.DatastoreGet(uuid)
+		if !exists {
+			return errors.New("file does not exist")
+		}
+		var file [][]byte
+		err = json.Unmarshal(entry, &file)
+		if err != nil {
+			return err
+		}
 	}
 
+	// determine the k value
+	// we need a flag to determine if the person owns the file or not, which we'll change in the loop above
+	// if not owned file, then calculate k by decrypting with private key
+	// otherwise calculate k as below
+	// then run the helper
+	if owned {
+		salt := file[1]
+		k, err := userlib.HMACEval(salt, append(salt, password...))
+		k = k[:16]
+		if err != nil {
+			return err
+		}
+		return appendHelper(file, k, uuid)
+
+	} else {
+		// PROBLEM: Our specifier requires knowledge of the file owner, but we cannot obtain that information here
+		// As such, we must change the format of our specifier/index where we store SymEnc(pk, k)
+
+		// recipientKey := userdata.PrivateKey
+		// specifier := [][]byte{username, []byte(username), []byte(filename)}
+		// index, err := json.Marshal(specifier)
+		// if err != nil {
+		// 	return err
+		// }
+
+		//
+	}
+	return err
+}
+func appendHelper(file [][]byte, k []byte, uuid uuid.UUID) (err error) {
+
+	data := file[2]
 	iv := userlib.RandomBytes(16)
 	encryptedData := userlib.SymEnc(k, iv, data)
 
@@ -313,7 +350,7 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 		return err
 	}
 
-	userlib.DatastoreSet(UUID, fileToBytes)
+	userlib.DatastoreSet(uuid, fileToBytes)
 
 	return nil
 }
@@ -382,6 +419,12 @@ func (userdata *User) LoadFile(filename string) (data []byte, err error) {
 // should be able to know the sender.
 func (userdata *User) ShareFile(filename string, recipient string) (accessToken string, err error) {
 
+	// THREE THINGS:
+	// 1. we need to have two cases for whether the person sharing owns the file or not
+	// 2. we need to make sure the person owning keeps record of who she shared to, so that
+	//    she can revoke access (i.e., update k for everyone else except the revoked person)
+	// 3. we gotta add a mac to ensure that the access token wasn't tampered with
+
 	username := []byte(userdata.Username)
 	password := []byte(userdata.Password)
 
@@ -396,18 +439,29 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 	if err != nil {
 		return "", err
 	}
+
+	// THING 2 begins here
+
+	// CASE 1: THEY OWN FILE, must check file[0][0]
+	// THING 1 in this case
+
+	// this would become file[1]
 	salt := file[0]
 	k, err := userlib.HMACEval(salt, append(salt, password...))
 	if err != nil {
 		return "", err
 	}
 
+	// CASE 2: THEY DON'T OWN FILE, must check file[0][0]
+	// they need to calculate k using their own access token
+
+	// THING 2 ends here
+
 	recipientKey := hash(append([]byte(recipient+filename), password...))[:16]
 	iv := userlib.RandomBytes(16)
-	// index := hash(append(append(username, byte(0), recipient...), filename...))
 
-	specifier := [][]byte{username, []byte(recipient), []byte(filename)}
-	index, err := json.Marshal(specifier)
+	// must include these three fields so that it is unique
+	index, err := json.Marshal([][]byte{username, []byte(recipient), []byte(filename)})
 	if err != nil {
 		return "", err
 	}
@@ -423,6 +477,7 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 	if err != nil {
 		return "", err
 	}
+	// THING 3 at the end
 	accessToken = string(encryptedMessage)
 
 	return
@@ -434,6 +489,29 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 // it is authentically from the sender.
 func (userdata *User) ReceiveFile(filename string, sender string,
 	accessToken string) error {
+
+	// HOW SHARING WILL WORK
+	// - let's say that alice shared to bob, then bob shared to cathy
+	// - alice's file is called "A", bob names his version "B", and cathy names hers "C", but they all
+	//   reference alice's file, "A"
+	// DATABASE:
+	// KEY: hash("alice" + "A"); VAL: [0, salt, mac + chunk, mac + chunk...]
+	// KEY: hash("bob" + "B"); VAL: [1, mac + accessToken]
+	// KEY: hash("cathy" + "C"); VAL: [1, mac + accessToken]
+	// - bob's access token will include his recipientKey backed with alice's password as well as
+	//   the index where he can find his symmetric key encrypted k
+	// - cathy's access token will include a recipientKey backed by bob's password as well as
+	//   the index where she can find her symmetric key encrypted k
+	// - however, it is critical to ensure that the index for all descendants includes the name of
+	//   the original file creator and the original filename
+	//   	- e.g, cathy's index variable = ["alice", "cathy", "A"]
+	//   	- this means we can direct access to file and don't need to loop along the sharing tree
+	//   	- **QUESTION** is this way of indexing okay or do we need to preserve more sharing info?
+	//   		- alternative: index = [creator, og_filename, sender, sender_fn, recipient]
+	//          - but this alternative seems like it contains too much unnecessary info?
+	// **QUESTION** is it okay if an attacker can look at the values of the items in the database
+	//   and see how many owned/shared files there are?
+
 	return nil
 }
 
