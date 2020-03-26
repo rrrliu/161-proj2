@@ -495,27 +495,57 @@ func (userdata *User) ReceiveFile(filename string, sender string,
 	// - alice's file is called "A", bob names his version "B", and cathy names hers "C", but they all
 	//   reference alice's file, "A"
 	// DATABASE:
-	// KEY: hash("alice" + "A"); VAL: [0, salt, mac + chunk, mac + chunk...]
-	// KEY: hash("bob" + "B"); VAL: [1, mac + accessToken]
-	// KEY: hash("cathy" + "C"); VAL: [1, mac + accessToken]
+	// KEY: hash("alice" + "A")            VAL: [0, salt, SymEnc(key_a, mac + chunk, mac + chunk...])
+	// KEY: hash("bob" + "B")              VAL: [1, mac + accessToken_b]
+	// KEY: hash("bob" + "alice" + "A")    VAL: SymEnc(key_b, key_a)
+	// KEY: hash("cathy" + "C")            VAL: [1, mac + accessToken_c]
+
+	// We have accessToken_i := PKEnc(PK_i, [key_i, [og_user, i, filename]]) for all direct children i of owner
+	//                                                ^ aka index2
+	//     and accessToken_j := PKEnc(PK_j, [key_i, [og_user, i, filename]]) for all descendants j of direct children i
+	//                                                ^ aka index2
 	// - bob's access token will include his recipientKey backed with alice's password as well as
 	//   the index where he can find his symmetric key encrypted k
-	// - cathy's access token will include a recipientKey backed by bob's password as well as
-	//   the index where she can find her symmetric key encrypted k
-	// - however, it is critical to ensure that the index for all descendants includes the name of
-	//   the original file creator and the original filename
-	//   	- e.g, cathy's index variable = ["alice", "cathy", "A"]
-	//   	- this means we can direct access to file and don't need to loop along the sharing tree
-	//   	- **QUESTION** is this way of indexing okay or do we need to preserve more sharing info?
-	//   		- alternative: index = [creator, og_filename, sender, sender_fn, recipient]
-	//          - but this alternative seems like it contains too much unnecessary info?
-	// **QUESTION** is it okay if an attacker can look at the values of the items in the database
-	//   and see how many owned/shared files there are?
+	// - cathy's access token will include bob's recipientKey backed with alice's password as well as
+	//   the index where she can find his symmetric key encrypted k
+	// - any of bob's eventual descendants will have to use bob's recipientKey
+	// - any of cathy's eventual descendants will ALSO have to use bob's recipientKey, since cathy's "gang leader" is bob
 
 	return nil
 }
 
 // RevokeFile - Removes target user's access.
 func (userdata *User) RevokeFile(filename string, targetUsername string) (err error) {
+
+	// main idea: generate a new salt, recreate a new master key, and update
+	//            the encrypted master key entry for every direct child except
+	//            the encrypted master key entry of targetUsername
+
+	// say we have          alice
+	//                      /   \
+	//                    bob  doug
+	//                     |
+	//                    cathy
+
+	// - in our datastore we'd have
+	// KEY: hash("alice" + "A")            VAL: [0, salt, SymEnc(key_a, mac + chunk, mac + chunk...])
+	// KEY: hash("bob" + "B")              VAL: [1, mac + accessToken_b]
+	// KEY: hash("bob" + "alice" + "A")    VAL: SymEnc(key_b, key_a)
+	// KEY: hash("cathy" + "C")            VAL: [1, mac + accessToken_c]
+	// KEY: hash("doug" + "D")              VAL: [1, mac + accessToken_d]
+	// KEY: hash("doug" + "alice" + "A")    VAL: SymEnc(key_d, key_a)
+
+	// - say alice revokes bob's access
+	// - she would first create a new salt' and as a result a new key_a'
+	// - then in our datastore we'd have
+	// KEY: hash("alice" + "A")            VAL: [0, salt', SymEnc(key_a', mac + chunk, mac + chunk...])
+	// KEY: hash("bob" + "B")              VAL: [1, mac + accessToken_b]
+	// KEY: hash("bob" + "alice" + "A")    VAL: SymEnc(key_b, key_a)
+	// KEY: hash("cathy" + "C")            VAL: [1, mac + accessToken_c]
+	// KEY: hash("doug" + "D")              VAL: [1, mac + accessToken_d]
+	// KEY: hash("doug" + "alice" + "A")    VAL: SymEnc(key_d, key_a')
+
+	// - doug (and his future descendants) can still access the original file with key_a', but bob and cathy can no longer,
+	//   since they don't have access to key_a'
 	return
 }
