@@ -91,6 +91,33 @@ func TestStorage(t *testing.T) {
 	}
 }
 
+func TestAppend(t *testing.T) {
+	clear()
+	u, err := InitUser("abe", "lincoln")
+	if err != nil {
+		t.Error("Failed to initialize user", err)
+		return
+	}
+
+	input := []byte("Four score and seven years")
+
+	a := []byte("Four score ")
+	u.StoreFile("gettysburg", a)
+
+	b := []byte("and seven years")
+	u.AppendFile("gettysburg", b)
+
+	output, err := u.LoadFile("gettysburg")
+	if err != nil {
+		t.Error("Failed to upload and download", err)
+		return
+	}
+	if !reflect.DeepEqual(input, output) {
+		t.Error("Downloaded file is not the same", input, output)
+		return
+	}
+}
+
 func TestInvalidFile(t *testing.T) {
 	clear()
 	u, err := InitUser("alice", "fubar")
