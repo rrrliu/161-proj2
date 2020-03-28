@@ -16,16 +16,13 @@ import (
 	"encoding/json"
 
 	// Likewise useful for debugging, etc...
-	"encoding/hex"
 
 	// UUIDs are generated right based on the cryptographic PRNG
 	// so lets make life easier and use those too...
 	//
 	// You need to add with "go get github.com/google/uuid"
-	"github.com/google/uuid"
 
 	// Useful for debug messages, or string manipulation for datastore keys.
-	"strings"
 
 	// Want to import errors.
 	"errors"
@@ -35,200 +32,12 @@ import (
 	_ "strconv"
 	// if you are looking for fmt, we don't give you fmt, but you can use userlib.DebugMsg.
 	// see someUsefulThings() below:
-	"fmt"
 )
 
 // This serves two purposes:
 // a) It shows you some useful primitives, and
 // b) it suppresses warnings for items not being imported.
 // Of course, this function can be deleted.
-func someUsefulThings() {
-	// Creates a random UUID
-	f := uuid.New()
-	userlib.DebugMsg("UUID as string:%v", f.String())
-
-	// Example of writing over a byte of f
-	f[0] = 10
-	userlib.DebugMsg("UUID as string:%v", f.String())
-
-	// takes a sequence of bytes and renders as hex
-	h := hex.EncodeToString([]byte("fubar"))
-	userlib.DebugMsg("The hex: %v", h)
-
-	// Marshals data into a JSON representation
-	// Will actually work with go structures as well
-	d, _ := json.Marshal(f)
-	userlib.DebugMsg("The json data: %v", string(d))
-	var g uuid.UUID
-	json.Unmarshal(d, &g)
-	userlib.DebugMsg("Unmashaled data %v", g.String())
-
-	// This creates an error type
-	userlib.DebugMsg("Creation of error %v", errors.New(strings.ToTitle("This is an error")))
-
-	// And a random RSA key.  In this case, ignoring the error
-	// return value
-	var pk userlib.PKEEncKey
-	var sk userlib.PKEDecKey
-	pk, sk, _ = userlib.PKEKeyGen()
-	userlib.DebugMsg("Key is %v, %v", pk, sk)
-}
-
-// Helper function: Takes the first 16 bytes and
-// converts it into the UUID type
-func bytesToUUID(data []byte) (ret uuid.UUID) {
-	for x := range ret {
-		ret[x] = data[x]
-	}
-	return
-}
-
-// User - The structure definition for a user record
-type User struct {
-	Username   string
-	Password   string
-	PrivateKey userlib.PrivateKeyType
-	// You can add other fields here if you want...
-	// Note for JSON to marshal/unmarshal, the fields need to
-	// be public (start with a capital letter)
-}
-
-// This creates a user.  It will only be called once for a user
-// (unless the keystore and datastore are cleared during testing purposes)
-
-// It should store a copy of the userdata, suitably encrypted, in the
-// datastore and should store the user's public key in the keystore.
-
-// The datastore may corrupt or completely erase the stored
-// information, but nobody outside should be able to get at the stored
-
-// You are not allowed to use any global storage other than the
-// keystore and the datastore functions in the userlib library.
-
-// InitUser - You can assume the password has strong entropy, EXCEPT
-// the attackers may possess a precomputed tables containing
-// Hashes of common passwords downloaded from the internet.
-func InitUser(username string, password string) (userdataptr *User, err error) {
-
-	var userdata User
-	userdataptr = &userdata
-
-	userdata.Username = username
-	userdata.Password = password
-
-	UUID := bytesToUUID(hash([]byte(username)))
-	salt := userlib.RandomBytes(16)
-	data := hash(append(salt, password...))
-	value := append(salt, data...)
-
-	masterKey := userlib.Argon2Key([]byte(password), salt, 16)
-
-	macKey, err := userlib.HashKDF(masterKey, []byte("mac"))
-	if err != nil {
-		return nil, err
-	}
-	mac, err := userlib.HMACEval(macKey[:16], value)
-	if err != nil {
-		return nil, err
-	}
-
-	publicKey, privateKey, err := userlib.PKEKeyGen()
-	if err != nil {
-		return nil, err
-	}
-	userlib.KeystoreSet(username, publicKey)
-
-	privateKeyBytes, err := json.Marshal(privateKey)
-	if err != nil {
-		return nil, err
-	}
-	iv := userlib.RandomBytes(16)
-	pkKey, err := userlib.HashKDF(masterKey, []byte("private key"))
-	if err != nil {
-		return nil, err
-	}
-	pkKey = pkKey[:16]
-	encryptedPrivate := userlib.SymEnc(pkKey, iv, privateKeyBytes)
-
-	// this is to verify that the user exists later with getuser
-	// we need to make it so that if this is valid, then the private key is revealed
-	entry, err := json.Marshal([][]byte{mac, value, encryptedPrivate})
-	if err != nil {
-		return nil, err
-	}
-	userlib.DatastoreSet(UUID, entry)
-	return &userdata, nil
-}
-
-func hash(message []byte) []byte {
-	hash, _ := userlib.HMACEval(make([]byte, 16), message)
-	return hash
-}
-
-// GetUser - This fetches the user information from the Datastore.  It should
-// fail with an error if the user/password is invalid, or if the user
-// data was corrupted, or if the user can't be found.
-func GetUser(username string, password string) (userdataptr *User, err error) {
-
-	UUID := bytesToUUID(hash([]byte(username)))
-	entry, exists := userlib.DatastoreGet(UUID)
-	if !exists {
-		return nil, errors.New("user does not exist")
-	}
-	var contents [][]byte
-	err = json.Unmarshal(entry, &contents)
-	if err != nil {
-		return nil, err
-	}
-
-	mac := contents[0]
-	value := contents[1]
-	encryptedPrivate := contents[2]
-
-	salt := make([]byte, 16, 16+len(password))
-	copy(salt, value[:16])
-	masterKey := userlib.Argon2Key([]byte(password), salt, 16)
-	macKey, err := userlib.HashKDF(masterKey, []byte("mac"))
-	if err != nil {
-		return nil, err
-	}
-	macKey = macKey[:16]
-	pkKey, err := userlib.HashKDF(masterKey, []byte("private key"))
-	if err != nil {
-		return nil, err
-	}
-	pkKey = pkKey[:16]
-
-	marshalledPrivate := userlib.SymDec(pkKey, encryptedPrivate)
-	var privateKey userlib.PrivateKeyType
-	json.Unmarshal(marshalledPrivate, &privateKey)
-
-	validation, _ := userlib.HMACEval(macKey, value)
-	if !userlib.HMACEqual(mac, validation) {
-		return nil, errors.New("data has been corrupted")
-	}
-
-	data := value[16:]
-	// this part is not working even though they are same when we print
-	if userlib.HMACEqual(data, hash(append(salt, password...))) {
-		var userdata User
-		userdataptr = &userdata
-		userdata.Username = username
-		userdata.Password = password
-		userdata.PrivateKey = privateKey
-		return userdataptr, nil
-	}
-
-	return nil, errors.New("invalid password")
-}
-
-func printSlice(slice []byte) {
-	print("Length:", len(slice), "\n")
-	for _, n := range slice {
-		fmt.Printf("%2x", n)
-	}
-	print("\n")
-}
 
 // OWNED - If the file was created by this user
 const OWNED = 0
@@ -248,7 +57,11 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 	salt := userlib.RandomBytes(16)
 
 	var file [][]byte
+	// owned vs shared
 	file = append(file, []byte{OWNED})
+	// who it's shared with
+	file = append(file, []byte{})
+	// the salt to calculate k with, for the owner
 	file = append(file, salt)
 
 	fileToBytes, err := json.Marshal(file)
@@ -260,12 +73,7 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 	userdata.AppendFile(filename, data)
 }
 
-// AppendFile - This adds on to an existing file.
-//
-// Append should be efficient, you shouldn't rewrite or reencrypt the
-// existing file, but only whatever additional information and
-// metadata you need.
-func (userdata *User) AppendFile(filename string, data []byte) (err error) {
+func (userdata *User) getFile(filename string) (file [][]byte, key []byte, err error) {
 
 	username := []byte(userdata.Username)
 	password := []byte(userdata.Password)
@@ -278,58 +86,68 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 	var file [][]byte
 	err = json.Unmarshal(entry, &file)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
-	owned := true
+	if file[0][0] == OWNED {
 
-	// this loop will no longer be necessary with proper indexing--read comment in ReceiveFile
-	for file[0][0] != SHARED {
-		owned = false
-		uuid := bytesToUUID(file[1])
-		entry, exists := userlib.DatastoreGet(uuid)
-		if !exists {
-			return errors.New("file does not exist")
-		}
-		var file [][]byte
-		err = json.Unmarshal(entry, &file)
-		if err != nil {
-			return err
-		}
-	}
-
-	// determine the k value
-	// we need a flag to determine if the person owns the file or not, which we'll change in the loop above
-	// if not owned file, then calculate k by decrypting with private key
-	// otherwise calculate k as below
-	// then run the helper
-	if owned {
-		salt := file[1]
+		salt := file[2]
 		k, err := userlib.HMACEval(salt, append(salt, password...))
 		k = k[:16]
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
-		return appendHelper(file, k, uuid)
+		return file, k, nil
 
-	} else {
-		// PROBLEM: Our specifier requires knowledge of the file owner, but we cannot obtain that information here
-		// As such, we must change the format of our specifier/index where we store SymEnc(pk, k)
+	} else if file[0][0] == SHARED {
 
-		// recipientKey := userdata.PrivateKey
-		// specifier := [][]byte{username, []byte(username), []byte(filename)}
-		// index, err := json.Marshal(specifier)
-		// if err != nil {
-		// 	return err
-		// }
+		// this is the digital signature part which i randomly said was length 16, needs to be verified as well
+		ds = file[1][:64]
+		accessToken = file[1][64:]
 
-		//
+		marshalledMessage, err := userlib.PKEDec(userdata.PrivateKey, accessToken)
+		if err != nil {
+			return nil, nil, err
+		}
+		var message [][]byte
+		err = json.Unmarshal(marshalledMessage, &message)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		recipientKey := message[0]
+		fileInfo := message[1]
+
+		keyUUID := bytesToUUID(hash(fileInfo))
+
+		encodedKeyEntry, exists := userlib.DatastoreGet(keyUUID)
+		if !exists {
+			return errors.New("file does not exist")
+		}
+		// we still need to make sure the mac is correct
+		keyMAC := encodedKey[:64]
+		encodedKey := encodedKey[64:]
+
+		k := userlib.SymDec(recipientKey, encodedKey)
+
+		return file, k, nil
 	}
-	return err
-}
-func appendHelper(file [][]byte, k []byte, uuid uuid.UUID) (err error) {
 
-	data := file[2]
+	return file, k, errors.New("could not calculate k")
+}
+
+// AppendFile - This adds on to an existing file.
+//
+// Append should be efficient, you shouldn't rewrite or reencrypt the
+// existing file, but only whatever additional information and
+// metadata you need.
+func (userdata *User) AppendFile(filename string, data []byte) (err error) {
+
+	file, k, err := userdata.getFile(filename)
+	if err != nil {
+		return err
+	}
+
 	iv := userlib.RandomBytes(16)
 	encryptedData := userlib.SymEnc(k, iv, data)
 
@@ -350,6 +168,8 @@ func appendHelper(file [][]byte, k []byte, uuid uuid.UUID) (err error) {
 		return err
 	}
 
+	username := []byte(userdata.Username)
+	uuid := bytesToUUID(hash(append(username, filename...)))
 	userlib.DatastoreSet(uuid, fileToBytes)
 
 	return nil
@@ -360,25 +180,12 @@ func appendHelper(file [][]byte, k []byte, uuid uuid.UUID) (err error) {
 // It should give an error if the file is corrupted in any way.
 func (userdata *User) LoadFile(filename string) (data []byte, err error) {
 
-	username := []byte(userdata.Username)
-	password := []byte(userdata.Password)
-
-	UUID := bytesToUUID(hash(append(username, filename...)))
-	entry, exists := userlib.DatastoreGet(UUID)
-	if !exists {
-		return nil, errors.New("file does not exist")
-	}
-
-	var file [][]byte
-	err = json.Unmarshal(entry, &file)
+	file, k, err := userdata.getFile(filename)
 	if err != nil {
 		return nil, err
 	}
-	salt := file[0]
-	k, err := userlib.HMACEval(salt, append(salt, password...))
-	k = k[:16]
 
-	for _, current := range file[1:] {
+	for _, current := range file[3:] {
 		mac := current[:64]
 		encryptedData := current[64:]
 
@@ -427,6 +234,8 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 
 	username := []byte(userdata.Username)
 	password := []byte(userdata.Password)
+	privateKey := userdata.PrivateKey
+	signKey := userdata.SignKey
 
 	UUID := bytesToUUID(hash(append(username, filename...)))
 	entry, exists := userlib.DatastoreGet(UUID)
@@ -444,41 +253,71 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 
 	// CASE 1: THEY OWN FILE, must check file[0][0]
 	// THING 1 in this case
+	if file[0][0] == OWNED {
+		// Update children
+		encryptedChildren := file[1]
+		children := SymDec(password, encryptedChildren)
+		children = append(children, recipient)
+		iv := userlib.RandomBytes(16)
+		file[1] = SymEnc(password, iv, children)
 
-	// this would become file[1]
-	salt := file[0]
-	k, err := userlib.HMACEval(salt, append(salt, password...))
-	if err != nil {
-		return "", err
-	}
+		// Send the access token
 
-	// CASE 2: THEY DON'T OWN FILE, must check file[0][0]
-	// they need to calculate k using their own access token
+		salt := file[2]
+		k, err := userlib.HMACEval(salt, append(salt, password...))
+		if err != nil {
+			return "", err
+		}
 
-	// THING 2 ends here
+		recipientKey := hash(append([]byte(recipient+filename), password...))[:16]
 
-	recipientKey := hash(append([]byte(recipient+filename), password...))[:16]
-	iv := userlib.RandomBytes(16)
+		// must include these three fields so that it is unique
+		index, err := json.Marshal([][]byte{username, []byte(recipient), []byte(filename)})
+		if err != nil {
+			return "", err
+		}
 
-	// must include these three fields so that it is unique
-	index, err := json.Marshal([][]byte{username, []byte(recipient), []byte(filename)})
-	if err != nil {
-		return "", err
-	}
+		iv := userlib.RandomBytes(16)
+		encryptedKey := userlib.SymEnc(recipientKey, iv, k)
+		userlib.DatastoreSet(bytesToUUID(hash(index)), encryptedKey)
+		publicKey, ok := userlib.KeystoreGet(recipient + "p")
+		if !ok {
+			return "", errors.New("recipient's PK not found")
+		}
 
-	encryptedKey := userlib.SymEnc(recipientKey, iv, k)
-	userlib.DatastoreSet(bytesToUUID(hash(index)), encryptedKey)
-	publicKey, ok := userlib.KeystoreGet(recipient)
-	if !ok {
-		return "", errors.New("recipient's PK not found")
+		message := append(recipientKey, index...)
+
+	} else {
+		// Send the access token
+		ds := file[1][:64]
+		myAccessToken := file[1][64:]
+		verifyKey, ok := userlib.KeySToreGet(username + "d")
+		if !ok {
+			return "", errors.New("sharer's verification key not found")
+		}
+
+		message, err := PKEDec(privateKey, myAccessToken)
+		if err != nil {
+			return "", err
+		}
+
+		err = DSVerify(verifyKey, ds, message)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	encryptedMessage, err := userlib.PKEEnc(publicKey, append(recipientKey, index...))
 	if err != nil {
 		return "", err
 	}
-	// THING 3 at the end
-	accessToken = string(encryptedMessage)
+	// TODO: digital signature
+	signature, err := userlib.DSSign(signKey, message)
+	if err != nil {
+		return "", err
+	}
+
+	accessToken = string(signature[:64] + encryptedMessage)
 
 	return
 }
@@ -495,10 +334,10 @@ func (userdata *User) ReceiveFile(filename string, sender string,
 	// - alice's file is called "A", bob names his version "B", and cathy names hers "C", but they all
 	//   reference alice's file, "A"
 	// DATABASE:
-	// KEY: hash("alice" + "A")            VAL: [0, salt, SymEnc(key_a, mac + chunk, mac + chunk...])
-	// KEY: hash("bob" + "B")              VAL: [1, mac + accessToken_b]
-	// KEY: hash("bob" + "alice" + "A")    VAL: SymEnc(key_b, key_a)
-	// KEY: hash("cathy" + "C")            VAL: [1, mac + accessToken_c]
+	// KEY: hash("alice" + "A")            VAL: [0, SymEnc(a, ["bob"]), salt, SymEnc(key, mac + chunk), SymEnc(key, mac + chunk), ...]
+	// KEY: hash("bob" + "B")              VAL: [1, ds + accessToken_b]
+	// KEY: hash("bob" + "alice" + "A")    VAL: SymEnc(key_b, key)
+	// KEY: hash("cathy" + "C")            VAL: [1, ds + accessToken_c]
 
 	// We have accessToken_i := PKEnc(PK_i, [key_i, [og_user, i, filename]]) for all direct children i of owner
 	//                                                ^ aka index2
@@ -527,22 +366,27 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 	//                     |
 	//                    cathy
 
+	// We have accessToken_i := PKEnc(PK_i, [key_i, [og_user, i, filename]]) for all direct children i of owner
+	//                                                ^ aka index2
+	//     and accessToken_j := PKEnc(PK_j, [key_i, [og_user, i, filename]]) for all descendants j of direct children i
+	//                                                ^ aka index2
+
 	// - in our datastore we'd have
-	// KEY: hash("alice" + "A")            VAL: [0, salt, SymEnc(key_a, mac + chunk, mac + chunk...])
-	// KEY: hash("bob" + "B")              VAL: [1, mac + accessToken_b]
+	// KEY: hash("alice" + "A")            VAL: [0, SymEnc(a, ["bob", "doug"]), salt, SymEnc(key_a, mac + chunk, mac + chunk...])
+	// KEY: hash("bob" + "B")              VAL: [1, ds + accessToken_b]
 	// KEY: hash("bob" + "alice" + "A")    VAL: SymEnc(key_b, key_a)
-	// KEY: hash("cathy" + "C")            VAL: [1, mac + accessToken_c]
-	// KEY: hash("doug" + "D")              VAL: [1, mac + accessToken_d]
+	// KEY: hash("cathy" + "C")            VAL: [1, ds + accessToken_c]
+	// KEY: hash("doug" + "D")              VAL: [1, ds + accessToken_d]
 	// KEY: hash("doug" + "alice" + "A")    VAL: SymEnc(key_d, key_a)
 
 	// - say alice revokes bob's access
 	// - she would first create a new salt' and as a result a new key_a'
 	// - then in our datastore we'd have
 	// KEY: hash("alice" + "A")            VAL: [0, salt', SymEnc(key_a', mac + chunk, mac + chunk...])
-	// KEY: hash("bob" + "B")              VAL: [1, mac + accessToken_b]
+	// KEY: hash("bob" + "B")              VAL: [1, ds + accessToken_b]
 	// KEY: hash("bob" + "alice" + "A")    VAL: SymEnc(key_b, key_a)
-	// KEY: hash("cathy" + "C")            VAL: [1, mac + accessToken_c]
-	// KEY: hash("doug" + "D")              VAL: [1, mac + accessToken_d]
+	// KEY: hash("cathy" + "C")            VAL: [1, ds + accessToken_c]
+	// KEY: hash("doug" + "D")              VAL: [1, ds + accessToken_d]
 	// KEY: hash("doug" + "alice" + "A")    VAL: SymEnc(key_d, key_a')
 
 	// - doug (and his future descendants) can still access the original file with key_a', but bob and cathy can no longer,
