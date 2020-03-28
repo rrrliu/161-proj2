@@ -125,12 +125,25 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, err e
 		if !exists {
 			return nil, nil, errors.New("file does not exist")
 		}
-		// we still need to make sure the mac is correct
-		// TODO: check mac
-		keyMAC := encodedKeyEntry[:64]
+
+		mac := encodedKeyEntry[:64]
 		encodedKey := encodedKeyEntry[64:]
 
 		k := userlib.SymDec(recipientKey, encodedKey)
+
+		macKey, err := userlib.HashKDF(recipientKey, []byte("mac"))
+		if err != nil {
+			return nil, nil, err
+		}
+		macKey = macKey[:16]
+		validation, err := userlib.HMACEval(macKey, k)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if !userlib.HMACEqual(mac, validation) {
+			return nil, nil, errors.New("data has been corrupted")
+		}
 
 		return file, k, nil
 	}
@@ -191,19 +204,16 @@ func (userdata *User) LoadFile(filename string) (data []byte, err error) {
 		mac := current[:64]
 		encryptedData := current[64:]
 
-		if err != nil {
-			panic(err)
-		}
 		currentData := userlib.SymDec(k, encryptedData)
 
-		newKey, err := userlib.HashKDF(k, []byte("mac"))
+		macKey, err := userlib.HashKDF(k, []byte("mac"))
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
-		macKey := newKey[:16]
+		macKey = macKey[:16]
 		validation, err := userlib.HMACEval(macKey, currentData)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 
 		if !userlib.HMACEqual(mac, validation) {
@@ -228,12 +238,6 @@ func (userdata *User) LoadFile(filename string) (data []byte, err error) {
 // should be able to know the sender.
 func (userdata *User) ShareFile(filename string, recipient string) (accessToken string, err error) {
 
-	// THREE THINGS:
-	// 1. we need to have two cases for whether the person sharing owns the file or not
-	// 2. we need to make sure the person owning keeps record of who she shared to, so that
-	//    she can revoke access (i.e., update k for everyone else except the revoked person)
-	// 3. we gotta add a mac to ensure that the access token wasn't tampered with
-
 	username := []byte(userdata.Username)
 	password := []byte(userdata.Password)
 	privateKey := userdata.PrivateKey
@@ -253,10 +257,6 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 
 	var message []byte
 
-	// THING 2 begins here
-
-	// CASE 1: THEY OWN FILE, must check file[0][0]
-	// THING 1 in this case
 	publicKey, ok := userlib.KeystoreGet(recipient + "p")
 	recipientKey := hash(append([]byte(recipient+filename), password...))[:16]
 	index, err := json.Marshal([][]byte{username, []byte(recipient), []byte(filename)})
@@ -283,7 +283,18 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 
 		iv = userlib.RandomBytes(16)
 		encryptedKey := userlib.SymEnc(recipientKey, iv, k)
-		userlib.DatastoreSet(bytesToUUID(hash(index)), encryptedKey)
+
+		macKey, err := userlib.HashKDF(recipientKey, []byte("mac"))
+		if err != nil {
+			return "", err
+		}
+		macKey = macKey[:16]
+		mac, err := userlib.HMACEval(macKey, k)
+		if err != nil {
+			return "", err
+		}
+
+		userlib.DatastoreSet(bytesToUUID(hash(index)), append(mac, encryptedKey...))
 		if !ok {
 			return "", errors.New("recipient's PK not found")
 		}
@@ -299,7 +310,7 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 			return "", errors.New("sharer's verification key not found")
 		}
 
-		message, err := userlib.PKEDec(privateKey, myAccessToken)
+		message, err = userlib.PKEDec(privateKey, myAccessToken)
 		if err != nil {
 			return "", err
 		}
@@ -314,7 +325,7 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 	if err != nil {
 		return "", err
 	}
-	// TODO: digital signature
+
 	signature, err := userlib.DSSign(signKey, message)
 	if err != nil {
 		return "", err
