@@ -81,9 +81,8 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, err e
 	uuid := bytesToUUID(hash(append(username, filename...)))
 	entry, exists := userlib.DatastoreGet(uuid)
 	if !exists {
-		return errors.New("file does not exist")
+		return nil, nil, errors.New("file does not exist")
 	}
-	var file [][]byte
 	err = json.Unmarshal(entry, &file)
 	if err != nil {
 		return nil, nil, err
@@ -102,8 +101,10 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, err e
 	} else if file[0][0] == SHARED {
 
 		// this is the digital signature part which i randomly said was length 16, needs to be verified as well
-		ds = file[1][:64]
-		accessToken = file[1][64:]
+		ds := file[1][:64]
+
+		// TODO: check digital signature
+		accessToken := file[1][64:]
 
 		marshalledMessage, err := userlib.PKEDec(userdata.PrivateKey, accessToken)
 		if err != nil {
@@ -122,18 +123,19 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, err e
 
 		encodedKeyEntry, exists := userlib.DatastoreGet(keyUUID)
 		if !exists {
-			return errors.New("file does not exist")
+			return nil, nil, errors.New("file does not exist")
 		}
 		// we still need to make sure the mac is correct
-		keyMAC := encodedKey[:64]
-		encodedKey := encodedKey[64:]
+		// TODO: check mac
+		keyMAC := encodedKeyEntry[:64]
+		encodedKey := encodedKeyEntry[64:]
 
 		k := userlib.SymDec(recipientKey, encodedKey)
 
 		return file, k, nil
 	}
 
-	return file, k, errors.New("could not calculate k")
+	return file, nil, errors.New("could not calculate k")
 }
 
 // AppendFile - This adds on to an existing file.
@@ -249,17 +251,23 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 		return "", err
 	}
 
+	var message []byte
+
 	// THING 2 begins here
 
 	// CASE 1: THEY OWN FILE, must check file[0][0]
 	// THING 1 in this case
+	publicKey, ok := userlib.KeystoreGet(recipient + "p")
+	recipientKey := hash(append([]byte(recipient+filename), password...))[:16]
+	index, err := json.Marshal([][]byte{username, []byte(recipient), []byte(filename)})
+
 	if file[0][0] == OWNED {
 		// Update children
 		encryptedChildren := file[1]
-		children := SymDec(password, encryptedChildren)
-		children = append(children, recipient)
+		children := userlib.SymDec(password, encryptedChildren)
+		children = append(children, []byte(recipient)...)
 		iv := userlib.RandomBytes(16)
-		file[1] = SymEnc(password, iv, children)
+		file[1] = userlib.SymEnc(password, iv, children)
 
 		// Send the access token
 
@@ -269,39 +277,34 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 			return "", err
 		}
 
-		recipientKey := hash(append([]byte(recipient+filename), password...))[:16]
-
-		// must include these three fields so that it is unique
-		index, err := json.Marshal([][]byte{username, []byte(recipient), []byte(filename)})
 		if err != nil {
 			return "", err
 		}
 
-		iv := userlib.RandomBytes(16)
+		iv = userlib.RandomBytes(16)
 		encryptedKey := userlib.SymEnc(recipientKey, iv, k)
 		userlib.DatastoreSet(bytesToUUID(hash(index)), encryptedKey)
-		publicKey, ok := userlib.KeystoreGet(recipient + "p")
 		if !ok {
 			return "", errors.New("recipient's PK not found")
 		}
 
-		message := append(recipientKey, index...)
+		message = append(recipientKey, index...)
 
 	} else {
 		// Send the access token
 		ds := file[1][:64]
 		myAccessToken := file[1][64:]
-		verifyKey, ok := userlib.KeySToreGet(username + "d")
+		verifyKey, ok := userlib.KeystoreGet(string(append(username, []byte("d")...)))
 		if !ok {
 			return "", errors.New("sharer's verification key not found")
 		}
 
-		message, err := PKEDec(privateKey, myAccessToken)
+		message, err := userlib.PKEDec(privateKey, myAccessToken)
 		if err != nil {
 			return "", err
 		}
 
-		err = DSVerify(verifyKey, ds, message)
+		err = userlib.DSVerify(verifyKey, ds, message)
 		if err != nil {
 			return "", err
 		}
@@ -317,7 +320,7 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 		return "", err
 	}
 
-	accessToken = string(signature[:64] + encryptedMessage)
+	accessToken = string(append(signature[:64], encryptedMessage...))
 
 	return
 }
