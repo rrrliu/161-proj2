@@ -22,7 +22,8 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 	password := []byte(userdata.Password)
 
 	// TODO: gotta change this too
-	UUID := bytesToUUID(hash(append(username, filename...)))
+	userFileIndex := marshal(username, []byte(filename))
+	UUID := bytesToUUID(hash(userFileIndex))
 	entry, exists := userlib.DatastoreGet(UUID)
 	if !exists {
 		return "", errors.New("file does not exist")
@@ -142,7 +143,8 @@ func (userdata *User) ReceiveFile(filename string, sender string,
 	}
 
 	fileToBytes := marshal([]byte{1}, accessTokenBytes)
-	UUID := bytesToUUID(hash([]byte(userdata.Username + filename)))
+	userFileIndex := marshal([]byte(userdata.Username), []byte(filename))
+	UUID := bytesToUUID(hash(userFileIndex))
 	userlib.DatastoreSet(UUID, fileToBytes)
 
 	return nil

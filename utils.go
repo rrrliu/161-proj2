@@ -189,7 +189,8 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, fileI
 	username := []byte(userdata.Username)
 	password := []byte(userdata.Password)
 
-	UUID := bytesToUUID(hash(append(username, filename...)))
+	userFileIndex := marshal(username, []byte(filename))
+	UUID := bytesToUUID(hash(userFileIndex))
 	entry, exists := userlib.DatastoreGet(UUID)
 	if !exists {
 		return nil, nil, nil, errors.New("file does not exist")
@@ -204,7 +205,7 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, fileI
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		return file, k[:16], append(username, filename...), nil
+		return file, k[:16], userFileIndex, nil
 
 	} else if file[0][0] == SHARED {
 
@@ -246,14 +247,15 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, fileI
 		}
 
 		fileInfo := unmarshal(marshalledFileInfo)
-		sharedFileUUID := bytesToUUID(hash(append(fileInfo[0], fileInfo[2]...)))
+		userFileIndex := marshal(fileInfo[0], fileInfo[2])
+		sharedFileUUID := bytesToUUID(hash(userFileIndex))
 		sharedFileEntry, exists := userlib.DatastoreGet(sharedFileUUID)
 		if !exists {
-			return nil, nil, nil, errors.New("file does not exist")
+			return nil, nil, nil, errors.New("file does not exist FFF")
 		}
 		sharedFile := unmarshal(sharedFileEntry)
 
-		return sharedFile, k[:16], append(fileInfo[0], fileInfo[2]...), nil
+		return sharedFile, k[:16], marshal(fileInfo[0], fileInfo[2]), nil
 
 	} else {
 		return nil, nil, nil, errors.New("could not calculate k")

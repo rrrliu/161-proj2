@@ -78,7 +78,8 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 
 	} else {
 
-		UUID := bytesToUUID(hash(append(username, filename...)))
+		userFileIndex := marshal(username, []byte(filename))
+		UUID := bytesToUUID(hash(userFileIndex))
 		salt := userlib.RandomBytes(16)
 
 		zero := make([]byte, 16)
