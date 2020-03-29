@@ -108,23 +108,42 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 	for _, item := range children {
 		child := string(item)
 		if child != targetUsername {
-			index, err := json.Marshal([][]byte{
-				[]byte(userdata.Username),
-				[]byte(child),
-				[]byte(filename),
-			})
+			err = userdata.storeEncryptedKey(filename, child, newKey)
 			if err != nil {
 				return err
 			}
-
-			recipientKey := hash(append([]byte(child+filename), password...))[:16]
-			uuid := bytesToUUID(hash(index))
-
-			// set entry at uuid to be mac + SymEnc(recipientKey, newKey)
-
 		}
 	}
 
+	return nil
+}
+
+func (userdata *User) storeEncryptedKey(filename, target string, key []byte) (err error) {
+	index, err := json.Marshal([][]byte{
+		[]byte(userdata.Username),
+		[]byte(target),
+		[]byte(filename),
+	})
+	if err != nil {
+		return err
+	}
+	recipientKey := hash(append([]byte(target+filename), userdata.Password...))[:16]
+	uuid := bytesToUUID(hash(index))
+
+	iv := userlib.RandomBytes(16)
+	encryptedKey := userlib.SymEnc(recipientKey, iv, key)
+
+	macKey, err := userlib.HashKDF(recipientKey, []byte("mac"))
+	if err != nil {
+		return err
+	}
+	macKey = macKey[:16]
+	mac, err := userlib.HMACEval(macKey, key)
+	if err != nil {
+		return err
+	}
+
+	userlib.DatastoreSet(uuid, append(mac, encryptedKey...))
 	return nil
 }
 

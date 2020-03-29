@@ -34,7 +34,7 @@ type User struct {
 	Username   string
 	Password   string
 	PrivateKey userlib.PrivateKeyType
-	SignKey    userlib.DSSignKeyType
+	SignKey    userlib.DSSignKey
 	// You can add other fields here if you want...
 	// Note for JSON to marshal/unmarshal, the fields need to
 	// be public (start with a capital letter)
@@ -178,7 +178,7 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	skKey = skKey[:16]
 
 	marshalledSign := userlib.SymDec(skKey, encryptedSign)
-	var signKey userlib.SignKeyType
+	var signKey userlib.DSSignKey
 	json.Unmarshal(marshalledSign, &signKey)
 
 	validation, _ := userlib.HMACEval(macKey, value)
