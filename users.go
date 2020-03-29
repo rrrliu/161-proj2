@@ -30,11 +30,12 @@ import (
 	// see someUsefulThings() below:
 )
 
+// User - stores confidential user information
 type User struct {
-	Username   string
-	Password   string
-	PrivateKey userlib.PrivateKeyType
-	SignKey    userlib.DSSignKey
+	Username string
+	Password string
+	DecKey   userlib.PKEDecKey
+	SignKey  userlib.DSSignKey
 	// You can add other fields here if you want...
 	// Note for JSON to marshal/unmarshal, the fields need to
 	// be public (start with a capital letter)
@@ -64,14 +65,15 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	userdata.Password = password
 
 	UUID := bytesToUUID(hash([]byte(username)))
+
+	_, ok := userlib.DatastoreGet(UUID)
+	if ok {
+		return nil, errors.New("User already exists")
+	}
+
 	salt := userlib.RandomBytes(16)
 	data := hash(append(salt, password...))
 	value := append(salt, data...)
-
-	_, ok := userlib.DatastoreGet(UUID)
-	if ok != false {
-		return nil, errors.New("User already exists")
-	}
 
 	masterKey := userlib.Argon2Key([]byte(password), salt, 16)
 
@@ -84,7 +86,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 		return nil, err
 	}
 
-	publicKey, privateKey, err := userlib.PKEKeyGen()
+	encKey, decKey, err := userlib.PKEKeyGen()
 	if err != nil {
 		return nil, err
 	}
@@ -94,47 +96,34 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 		return nil, err
 	}
 
-	userlib.KeystoreSet(username+"p", publicKey)
+	userdata.DecKey = decKey
+	userdata.SignKey = signKey
+	userdata.SignKey = signKey
+	userdata.SignKey = signKey
+	userdata.SignKey = signKey
+	userdata.SignKey = signKey
+
+	userlib.KeystoreSet(username+"p", encKey)
 	userlib.KeystoreSet(username+"d", verifyKey)
-
-	privateKeyBytes, err := json.Marshal(privateKey)
-	if err != nil {
-		return nil, err
-	}
-
-	signKeyBytes, err := json.Marshal(signKey)
-	if err != nil {
-		return nil, err
-	}
-
-	pkKey, err := userlib.HashKDF(masterKey, []byte("private key"))
-	if err != nil {
-		return nil, err
-	}
-
-	skKey, err := userlib.HashKDF(masterKey, []byte("sign key"))
-	if err != nil {
-		return nil, err
-	}
-
-	pkKey = pkKey[:16]
-	iv := userlib.RandomBytes(16)
-	encryptedPrivate := userlib.SymEnc(pkKey, iv, privateKeyBytes)
-	encryptedSign := userlib.SymEnc(skKey, iv, signKeyBytes)
 
 	// this is to verify that the user exists later with getuser
 	// we need to make it so that if this is valid, then the private key is revealed
-	entry, err := json.Marshal([][]byte{mac, value, encryptedPrivate, encryptedSign})
+	encryptedDec, err := encryptPrivateKey("dec key", decKey, masterKey)
+	if err != nil {
+		return nil, err
+	}
+
+	encryptedSign, err := encryptPrivateKey("sign key", signKey, masterKey)
+	if err != nil {
+		return nil, err
+	}
+
+	entry, err := json.Marshal([][]byte{mac, value, encryptedDec, encryptedSign})
 	if err != nil {
 		return nil, err
 	}
 	userlib.DatastoreSet(UUID, entry)
 	return &userdata, nil
-}
-
-func hash(message []byte) []byte {
-	hash, _ := userlib.HMACEval(make([]byte, 16), message)
-	return hash
 }
 
 // GetUser - This fetches the user information from the Datastore.  It should
@@ -154,51 +143,41 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	}
 
 	mac := contents[0]
-	value := contents[1]
-	encryptedPrivate := contents[2]
+	saltyPassword := contents[1]
+	encryptedDec := contents[2]
 	encryptedSign := contents[3]
 
 	salt := make([]byte, 16, 16+len(password))
-	copy(salt, value[:16])
+	copy(salt, saltyPassword[:16])
 	masterKey := userlib.Argon2Key([]byte(password), salt, 16)
 	macKey, err := userlib.HashKDF(masterKey, []byte("mac"))
 	if err != nil {
 		return nil, err
 	}
 	macKey = macKey[:16]
-	pkKey, err := userlib.HashKDF(masterKey, []byte("private key"))
+	decKey, err := decryptPrivateKey("dec key", encryptedDec, masterKey)
 	if err != nil {
 		return nil, err
 	}
-	pkKey = pkKey[:16]
 
-	marshalledPrivate := userlib.SymDec(pkKey, encryptedPrivate)
-	var privateKey userlib.PrivateKeyType
-	json.Unmarshal(marshalledPrivate, &privateKey)
-
-	skKey, err := userlib.HashKDF(masterKey, []byte("sign key"))
+	signKey, err := decryptPrivateKey("sign key", encryptedSign, masterKey)
 	if err != nil {
 		return nil, err
 	}
-	skKey = skKey[:16]
 
-	marshalledSign := userlib.SymDec(skKey, encryptedSign)
-	var signKey userlib.DSSignKey
-	json.Unmarshal(marshalledSign, &signKey)
-
-	validation, _ := userlib.HMACEval(macKey, value)
+	validation, _ := userlib.HMACEval(macKey, saltyPassword)
 	if !userlib.HMACEqual(mac, validation) {
 		return nil, errors.New("data has been corrupted")
 	}
 
-	data := value[16:]
-	// this part is not working even though they are same when we print
-	if userlib.HMACEqual(data, hash(append(salt, password...))) {
+	hashedPassword := saltyPassword[16:]
+	// checking if password is correct
+	if userlib.HMACEqual(hashedPassword, hash(append(salt, password...))) {
 		var userdata User
 		userdataptr = &userdata
 		userdata.Username = username
 		userdata.Password = password
-		userdata.PrivateKey = privateKey
+		userdata.DecKey = decKey
 		userdata.SignKey = signKey
 		return userdataptr, nil
 	}

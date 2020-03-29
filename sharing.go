@@ -21,9 +21,10 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 
 	username := []byte(userdata.Username)
 	password := []byte(userdata.Password)
-	privateKey := userdata.PrivateKey
-	signKey := userdata.SignKey
+	privateKey := userdata.DecKey
+	// signKey := userdata.SignKey
 
+	// TODO: gotta change this too
 	UUID := bytesToUUID(hash(append(username, filename...)))
 	entry, exists := userlib.DatastoreGet(UUID)
 	if !exists {
@@ -38,26 +39,24 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 
 	var message []byte
 
-	publicKey, ok := userlib.KeystoreGet(recipient + "p")
+	// TODO: need to change naming convention here, cause problems with recipient "bo" with filename "balice_file"--think of malicious group of users for this one
 	recipientKey := hash(append([]byte(recipient+filename), password...))[:16]
+	// TODO: also need to change the naming convention here, cause problems with recipient "alicebo" with filename "balice_file"
 	index, err := json.Marshal([][]byte{username, []byte(recipient), []byte(filename)})
 
 	if file[0][0] == OWNED {
 		// Update children
 		encryptedChildren := file[1]
-		children := userlib.SymDec(password, encryptedChildren)
+		zero := make([]byte, 16)
+		childrenKey := userlib.Argon2Key(password, zero, 16)
+		children := userlib.SymDec(childrenKey, encryptedChildren)
 		children = append(children, []byte(recipient)...)
 		iv := userlib.RandomBytes(16)
-		file[1] = userlib.SymEnc(password, iv, children)
+		file[1] = userlib.SymEnc(childrenKey, iv, children)
 
 		// Send the access token
-
 		salt := file[2]
 		k, err := userlib.HMACEval(salt, append(salt, password...))
-		if err != nil {
-			return "", err
-		}
-
 		if err != nil {
 			return "", err
 		}
@@ -76,9 +75,6 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 		}
 
 		userlib.DatastoreSet(bytesToUUID(hash(index)), append(mac, encryptedKey...))
-		if !ok {
-			return "", errors.New("recipient's PK not found")
-		}
 
 		message = append(recipientKey, index...)
 
@@ -102,19 +98,13 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 		}
 	}
 
-	encryptedMessage, err := userlib.PKEEnc(publicKey, append(recipientKey, index...))
+	encryptedMessage, err := userdata.asymEncrypt(recipient, append(recipientKey, index...))
 	if err != nil {
 		return "", err
 	}
 
-	signature, err := userlib.DSSign(signKey, message)
-	if err != nil {
-		return "", err
-	}
-
-	accessToken = string(append(signature[:64], encryptedMessage...))
-
-	return
+	accessToken = string(encryptedMessage)
+	return accessToken, nil
 }
 
 // ReceiveFile - Note recipient's filename can be different from the sender's filename.
@@ -146,7 +136,7 @@ func (userdata *User) ReceiveFile(filename string, sender string,
 	// - any of cathy's eventual descendants will ALSO have to use bob's recipientKey, since cathy's "gang leader" is bob
 
 	accessTokenBytes := []byte(accessToken)
-	ok, err := userdata.verifyAccessToken(accessTokenBytes)
+	message, ok, err := userdata.asymDecrypt(sender, accessTokenBytes)
 	if err != nil {
 		return err
 	}
@@ -154,8 +144,19 @@ func (userdata *User) ReceiveFile(filename string, sender string,
 		return errors.New("access token has been corrupted")
 	}
 
+	accessTokenBytes, err = userdata.asymEncrypt(userdata.Username, message)
+	if err != nil {
+		return err
+	}
+
+	file := [][]byte{[]byte{1}, accessTokenBytes}
+	fileToBytes, err := json.Marshal(file)
+	if err != nil {
+		return err
+	}
+
 	uuid := bytesToUUID(hash([]byte(userdata.Username + filename)))
-	userlib.DatastoreSet(uuid, accessTokenBytes)
+	userlib.DatastoreSet(uuid, fileToBytes)
 
 	return nil
 }
@@ -226,59 +227,4 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 	}
 
 	return nil
-}
-
-func (userdata *User) storeEncryptedKey(filename, target string, key []byte) (err error) {
-	index, err := json.Marshal([][]byte{
-		[]byte(userdata.Username),
-		[]byte(target),
-		[]byte(filename),
-	})
-	if err != nil {
-		return err
-	}
-	recipientKey := hash(append([]byte(target+filename), userdata.Password...))[:16]
-	uuid := bytesToUUID(hash(index))
-
-	iv := userlib.RandomBytes(16)
-	encryptedKey := userlib.SymEnc(recipientKey, iv, key)
-
-	macKey, err := userlib.HashKDF(recipientKey, []byte("mac"))
-	if err != nil {
-		return err
-	}
-	macKey = macKey[:16]
-	mac, err := userlib.HMACEval(macKey, key)
-	if err != nil {
-		return err
-	}
-
-	userlib.DatastoreSet(uuid, append(mac, encryptedKey...))
-	return nil
-}
-
-// Helper function to verify access token
-func (userdata *User) verifyAccessToken(accessTokenBytes []byte) (ok bool, err error) {
-	signature := accessTokenBytes[:64]
-	myAccessToken := accessTokenBytes[64:]
-
-	username := userdata.Username
-	privateKey := userdata.PrivateKey
-
-	verifyKey, ok := userlib.KeystoreGet(string(username + "d"))
-	if !ok {
-		return false, errors.New("sharer's verification key not found")
-	}
-
-	message, err := userlib.PKEDec(privateKey, myAccessToken)
-	if err != nil {
-		return false, err
-	}
-
-	err = userlib.DSVerify(verifyKey, signature, message)
-	if err != nil {
-		return false, err
-	}
-
-	return true, nil
 }

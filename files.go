@@ -52,25 +52,65 @@ const SHARED = 1
 func (userdata *User) StoreFile(filename string, data []byte) {
 
 	username := []byte(userdata.Username)
+	password := []byte(userdata.Password)
 
-	UUID := bytesToUUID(hash(append(username, filename...)))
-	salt := userlib.RandomBytes(16)
+	// TODO: when the filename already exists, make sure it's shared with the same people and maintains the same salt
+	//		 but only if the user owns that file, otherwise do the regular scheme
+	//		 okay, what if alice, "alice_file" > bob, "bob_file" > cathy, "cathy_file"
+	// 		 and then, alice.StoreFile("alice_file", "dfaniefjawf") should change whatever is in alice_file and keep it shared
+	ogFile, k, err := userdata.getFile(filename)
+	if err == nil {
+		newFile := make([][]byte, 3, 4)
+		copy(newFile, ogFile[:3])
+		iv := userlib.RandomBytes(16)
+		encryptedData := userlib.SymEnc(k, iv, data)
 
-	var file [][]byte
-	// owned vs shared
-	file = append(file, []byte{OWNED})
-	// who it's shared with
-	file = append(file, []byte{})
-	// the salt to calculate k with, for the owner
-	file = append(file, salt)
+		newKey, err := userlib.HashKDF(k, []byte("mac"))
+		if err != nil {
+			panic(err)
+		}
+		macKey := newKey[:16]
+		mac, err := userlib.HMACEval(macKey, data)
+		if err != nil {
+			panic(err)
+		}
 
-	fileToBytes, err := json.Marshal(file)
-	if err != nil {
-		panic(err)
+		newFile = append(newFile, append(mac, encryptedData...))
+
+		fileToBytes, err := json.Marshal(newFile)
+		if err != nil {
+			panic(err)
+		}
+
+		username := []byte(userdata.Username)
+		uuid := bytesToUUID(hash(append(username, filename...)))
+		userlib.DatastoreSet(uuid, fileToBytes)
+
+	} else {
+
+		UUID := bytesToUUID(hash(append(username, filename...)))
+		salt := userlib.RandomBytes(16)
+
+		var file [][]byte
+		// owned vs shared
+		file = append(file, []byte{OWNED})
+		// who it's shared with
+		zero := make([]byte, 16)
+		childrenKey := userlib.Argon2Key(password, zero, 16)
+		iv := userlib.RandomBytes(16)
+		encryptedChildren := userlib.SymEnc(childrenKey, iv, []byte{})
+		file = append(file, encryptedChildren)
+		// the salt to calculate k with, for the owner
+		file = append(file, salt)
+
+		fileToBytes, err := json.Marshal(file)
+		if err != nil {
+			panic(err)
+		}
+		userlib.DatastoreSet(UUID, fileToBytes)
+
+		userdata.AppendFile(filename, data)
 	}
-	userlib.DatastoreSet(UUID, fileToBytes)
-
-	userdata.AppendFile(filename, data)
 }
 
 func (userdata *User) getFile(filename string) (file [][]byte, key []byte, err error) {
@@ -99,27 +139,16 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, err e
 		return file, k, nil
 
 	} else if file[0][0] == SHARED {
-
-		// this is the digital signature part which i randomly said was length 16, needs to be verified as well
-		ds := file[1][:64]
-		verifyKey, ok := userlib.KeystoreGet(string(append(username, []byte("d")...)))
+		marshalledMessage, ok, err := userdata.asymDecrypt(userdata.Username, file[1])
 		if !ok {
-			return nil, nil, errors.New("sharer's verification key not found")
+			return nil, nil, errors.New("data has been corrupted 1")
 		}
-
-		accessToken := file[1][64:]
-
-		marshalledMessage, err := userlib.PKEDec(userdata.PrivateKey, accessToken)
 		if err != nil {
 			return nil, nil, err
 		}
+
 		var message [][]byte
 		err = json.Unmarshal(marshalledMessage, &message)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		err = userlib.DSVerify(verifyKey, ds, marshalledMessage)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -150,7 +179,7 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, err e
 		}
 
 		if !userlib.HMACEqual(mac, validation) {
-			return nil, nil, errors.New("data has been corrupted")
+			return nil, nil, errors.New("data has been corrupted 2")
 		}
 
 		return file, k, nil
@@ -225,7 +254,7 @@ func (userdata *User) LoadFile(filename string) (data []byte, err error) {
 		}
 
 		if !userlib.HMACEqual(mac, validation) {
-			return nil, errors.New("data has been corrupted")
+			return nil, errors.New("data has been corrupted 3")
 		}
 
 		data = append(data, currentData...)

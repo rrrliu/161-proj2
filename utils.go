@@ -75,7 +75,10 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 	return
 }
 
-// User - The structure definition for a user record
+func hash(message []byte) []byte {
+	hash, _ := userlib.HMACEval(make([]byte, 16), message)
+	return hash
+}
 
 func printSlice(slice []byte) {
 	print("Length:", len(slice), "\n")
@@ -83,4 +86,106 @@ func printSlice(slice []byte) {
 		fmt.Printf("%2x", n)
 	}
 	print("\n")
+}
+
+func encryptPrivateKey(purpose string, privateKey userlib.PrivateKeyType, masterKey []byte) ([]byte, error) {
+	privateKeyBytes, err := json.Marshal(privateKey)
+	if err != nil {
+		return nil, err
+	}
+	symKey, err := userlib.HashKDF(masterKey, []byte(purpose))
+	if err != nil {
+		return nil, err
+	}
+
+	symKey = symKey[:16]
+	iv := userlib.RandomBytes(16)
+	return userlib.SymEnc(symKey, iv, privateKeyBytes), nil
+}
+
+func decryptPrivateKey(purpose string, encryptedPrivate, masterKey []byte) (privateKey userlib.PrivateKeyType, err error) {
+	symKey, err := userlib.HashKDF(masterKey, []byte(purpose))
+	if err != nil {
+		return privateKey, err
+	}
+	symKey = symKey[:16]
+
+	marshalledPrivate := userlib.SymDec(symKey, encryptedPrivate)
+	json.Unmarshal(marshalledPrivate, &privateKey)
+	err = nil
+	return
+}
+
+func (userdata *User) storeEncryptedKey(filename, target string, key []byte) (err error) {
+	// TODO: change this index
+	index, err := json.Marshal([][]byte{
+		[]byte(userdata.Username),
+		[]byte(target),
+		[]byte(filename),
+	})
+	if err != nil {
+		return err
+	}
+	// TODO: also change the recipientKey
+	recipientKey := hash(append([]byte(target+filename), userdata.Password...))[:16]
+	uuid := bytesToUUID(hash(index))
+
+	iv := userlib.RandomBytes(16)
+	encryptedKey := userlib.SymEnc(recipientKey, iv, key)
+
+	macKey, err := userlib.HashKDF(recipientKey, []byte("mac"))
+	if err != nil {
+		return err
+	}
+	macKey = macKey[:16]
+	mac, err := userlib.HMACEval(macKey, key)
+	if err != nil {
+		return err
+	}
+
+	userlib.DatastoreSet(uuid, append(mac, encryptedKey...))
+	return nil
+}
+
+func (userdata *User) asymEncrypt(username string, message []byte) (encryptedMessage []byte, err error) {
+	publicKey, ok := userlib.KeystoreGet(username + "p")
+	if !ok {
+		return nil, errors.New(username + "'s PK not found")
+	}
+
+	ciphertext, err := userlib.PKEEnc(publicKey, message)
+	if err != nil {
+		return nil, err
+	}
+
+	signature, err := userlib.DSSign(userdata.SignKey, message)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(signature, ciphertext...), nil
+}
+
+func (userdata *User) asymDecrypt(username string, encryptedMessage []byte) (message []byte, ok bool, err error) {
+	signature := encryptedMessage[:256]
+	ciphertext := encryptedMessage[256:]
+
+	privateKey := userdata.DecKey
+
+	verifyKey, ok := userlib.KeystoreGet(username + "d")
+	if !ok {
+		return nil, false, errors.New("sharer's verification key not found")
+	}
+
+	message, err = userlib.PKEDec(privateKey, ciphertext)
+	if err != nil {
+		return nil, false, err
+	}
+
+	err = userlib.DSVerify(verifyKey, message, signature)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return message, true, nil
 }
