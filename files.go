@@ -55,11 +55,7 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 	username := []byte(userdata.Username)
 	password := []byte(userdata.Password)
 
-	// TODO: when the filename already exists, make sure it's shared with the same people and maintains the same salt
-	//		 but only if the user owns that file, otherwise do the regular scheme
-	//		 okay, what if alice, "alice_file" > bob, "bob_file" > cathy, "cathy_file"
-	// 		 and then, alice.StoreFile("alice_file", "dfaniefjawf") should change whatever is in alice_file and keep it shared
-	ogFile, k, err := userdata.getFile(filename)
+	file, k, fileIndex, err := userdata.getFile(filename)
 	if err == nil {
 
 		iv := userlib.RandomBytes(16)
@@ -75,11 +71,10 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 			panic(err)
 		}
 
-		fileToBytes := marshal(ogFile[0], ogFile[1], ogFile[2], append(mac, encryptedData...))
+		fileToBytes := marshal(file[0], file[1], file[2], append(mac, encryptedData...))
 
-		username := []byte(userdata.Username)
-		uuid := bytesToUUID(hash(append(username, filename...)))
-		userlib.DatastoreSet(uuid, fileToBytes)
+		UUID := bytesToUUID(hash(fileIndex))
+		userlib.DatastoreSet(UUID, fileToBytes)
 
 	} else {
 
@@ -89,7 +84,8 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 		zero := make([]byte, 16)
 		childrenKey := userlib.Argon2Key(password, zero, 16)
 		iv := userlib.RandomBytes(16)
-		encryptedChildren := userlib.SymEnc(childrenKey, iv, []byte{})
+		marshalledChildren := marshal()
+		encryptedChildren := userlib.SymEnc(childrenKey, iv, marshalledChildren)
 
 		fileToBytes := marshal([]byte{OWNED}, encryptedChildren, salt)
 		userlib.DatastoreSet(UUID, fileToBytes)
@@ -105,7 +101,7 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 // metadata you need.
 func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 
-	file, k, err := userdata.getFile(filename)
+	file, k, fileIndex, err := userdata.getFile(filename)
 	if err != nil {
 		return err
 	}
@@ -130,9 +126,8 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 		return err
 	}
 
-	username := []byte(userdata.Username)
-	uuid := bytesToUUID(hash(append(username, filename...)))
-	userlib.DatastoreSet(uuid, fileToBytes)
+	UUID := bytesToUUID(hash(fileIndex))
+	userlib.DatastoreSet(UUID, fileToBytes)
 
 	return nil
 }
@@ -141,7 +136,7 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 //
 // It should give an error if the file is corrupted in any way.
 func (userdata *User) LoadFile(filename string) (data []byte, err error) {
-	file, k, err := userdata.getFile(filename)
+	file, k, _, err := userdata.getFile(filename)
 	if err != nil {
 		return nil, err
 	}

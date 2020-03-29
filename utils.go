@@ -116,7 +116,7 @@ func decryptPrivateKey(purpose string, encryptedPrivate, masterKey []byte) (priv
 	return
 }
 
-func (userdata *User) storeEncryptedKey(filename, target string, key []byte) (err error) {
+func (userdata *User) storeEncryptedKey(filename string, target string, key []byte) (err error) {
 	// TODO: change this index
 	index := marshal([]byte(userdata.Username), []byte(target), []byte(filename))
 
@@ -184,7 +184,7 @@ func (userdata *User) asymDecrypt(username string, encryptedMessage []byte) (mes
 	return message, true, nil
 }
 
-func (userdata *User) getFile(filename string) (file [][]byte, key []byte, err error) {
+func (userdata *User) getFile(filename string) (file [][]byte, key []byte, fileIndex []byte, err error) {
 
 	username := []byte(userdata.Username)
 	password := []byte(userdata.Password)
@@ -192,7 +192,7 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, err e
 	UUID := bytesToUUID(hash(append(username, filename...)))
 	entry, exists := userlib.DatastoreGet(UUID)
 	if !exists {
-		return nil, nil, errors.New("file does not exist")
+		return nil, nil, nil, errors.New("file does not exist")
 	}
 	file = unmarshal(entry)
 
@@ -202,17 +202,18 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, err e
 		k, err := userlib.HMACEval(salt, append(salt, password...))
 		k = k[:16]
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return file, k[:16], nil
+		return file, k[:16], append(username, filename...), nil
 
 	} else if file[0][0] == SHARED {
+
 		message, ok, err := userdata.asymDecrypt(userdata.Username, file[1])
 		if !ok {
-			return nil, nil, errors.New("data has been corrupted 1")
+			return nil, nil, nil, errors.New("data has been corrupted 1")
 		}
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		recipientKey := message[:16]
@@ -222,7 +223,7 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, err e
 
 		encodedKeyEntry, exists := userlib.DatastoreGet(keyUUID)
 		if !exists {
-			return nil, nil, errors.New("file does not exist")
+			return nil, nil, nil, errors.New("file does not exist")
 		}
 
 		mac := encodedKeyEntry[:64]
@@ -232,30 +233,30 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, err e
 
 		macKey, err := userlib.HashKDF(recipientKey, []byte("mac"))
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		macKey = macKey[:16]
 		validation, err := userlib.HMACEval(macKey, k)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		if !userlib.HMACEqual(mac, validation) {
-			return nil, nil, errors.New("data has been corrupted 2")
+			return nil, nil, nil, errors.New("data has been corrupted 2")
 		}
 
 		fileInfo := unmarshal(marshalledFileInfo)
 		sharedFileUUID := bytesToUUID(hash(append(fileInfo[0], fileInfo[2]...)))
 		sharedFileEntry, exists := userlib.DatastoreGet(sharedFileUUID)
 		if !exists {
-			return nil, nil, errors.New("file does not exist")
+			return nil, nil, nil, errors.New("file does not exist")
 		}
 		sharedFile := unmarshal(sharedFileEntry)
 
-		return sharedFile, k[:16], nil
+		return sharedFile, k[:16], append(fileInfo[0], fileInfo[2]...), nil
 
 	} else {
-		return nil, nil, errors.New("could not calculate k")
+		return nil, nil, nil, errors.New("could not calculate k")
 	}
 }
 

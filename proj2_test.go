@@ -338,23 +338,23 @@ func TestRevoke(t *testing.T) {
 
 	// now we check to see whether each of bob and cathy can load the file or append to it
 	// by our method, they should not be able to load the file at all
-	_, err = bob.LoadFile("bob_alice_file")
-	if err == nil {
-		t.Error("Bob was able to view the file after his access was revoked")
+	bobFailedLoad, err := bob.LoadFile("bob_alice_file")
+	if err == nil && reflect.DeepEqual(bobFailedLoad, aliceFile) {
+		t.Error("Bob could read alice's file after being revoked access", err)
 		return
 	}
-	_, err = cathy.LoadFile("cathy_alice_file")
-	if err == nil {
-		t.Error("Cathy was able to view the file after her boss was revoked")
+	cathyFailedLoad, err := cathy.LoadFile("cathy_alice_file")
+	if err == nil && reflect.DeepEqual(cathyFailedLoad, aliceFile) {
+		t.Error("Cathy could read alice's file after her boss was revoked", err)
 		return
 	}
 
-	err = bob.AppendFile("bob_alice_file", []byte{})
+	err = bob.AppendFile("bob_alice_file", []byte("hehe im bob"))
 	if err == nil {
 		t.Error("Bob was able to append to the file after his access was revoked")
 		return
 	}
-	err = cathy.AppendFile("cathy_alice_file", []byte{})
+	err = cathy.AppendFile("cathy_alice_file", []byte("hehe im cathy"))
 	if err == nil {
 		t.Error("Cathy was able to append to the file after her boss was revoked")
 		return
@@ -476,7 +476,7 @@ func TestShareOverwrite(t *testing.T) {
 		return
 	}
 	if !reflect.DeepEqual(aliceNewFile, bobAliceFile) {
-		t.Error("Shared file from alice is not the same", aliceNewFile, bobAliceFile)
+		t.Error("Shared file from alice is not the same for bob after alice stored it again", aliceNewFile, bobAliceFile)
 		return
 	}
 	cathyAliceFile, err := cathy.LoadFile("cathy_alice_file")
@@ -485,7 +485,7 @@ func TestShareOverwrite(t *testing.T) {
 		return
 	}
 	if !reflect.DeepEqual(aliceNewFile, cathyAliceFile) {
-		t.Error("Shared file from alice is not the same", aliceNewFile, cathyAliceFile)
+		t.Error("Shared file from alice is not the same for cathy after alice stored it again", aliceNewFile, cathyAliceFile)
 		return
 	}
 
@@ -498,8 +498,8 @@ func TestShareOverwrite(t *testing.T) {
 		t.Error("Alice failed to download the alice file after bob stored it again", err)
 		return
 	}
-	if !reflect.DeepEqual(bobNewFile, bobAliceFile) {
-		t.Error("Shared file from alice is not the same", bobNewFile, aliceFile)
+	if !reflect.DeepEqual(bobNewFile, aliceFile) {
+		t.Error("Shared file from alice is not the same for alice after bob stored it again", bobNewFile, aliceFile)
 		return
 	}
 	cathyAliceFile, err = cathy.LoadFile("cathy_alice_file")
@@ -508,7 +508,7 @@ func TestShareOverwrite(t *testing.T) {
 		return
 	}
 	if !reflect.DeepEqual(bobNewFile, cathyAliceFile) {
-		t.Error("Shared file from alice is not the same", bobNewFile, cathyAliceFile)
+		t.Error("Shared file from alice is not the same for cathy after bob stored it again", bobNewFile, cathyAliceFile)
 		return
 	}
 }

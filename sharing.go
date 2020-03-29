@@ -1,7 +1,6 @@
 package proj2
 
 import (
-	"encoding/json"
 	"errors"
 
 	"github.com/cs161-staff/userlib"
@@ -29,28 +28,27 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 		return "", errors.New("file does not exist")
 	}
 
-	var file [][]byte
-	err = json.Unmarshal(entry, &file)
-	if err != nil {
-		return "", err
-	}
-
+	file := unmarshal(entry)
 	var message []byte
 
-	// TODO: need to change naming convention here, cause problems with recipient "bo" with filename "balice_file"--think of malicious group of users for this one
-	recipientKey := hash(append([]byte(recipient+filename), password...))[:16]
-	// TODO: also need to change the naming convention here, cause problems with recipient "alicebo" with filename "balice_file"
-	index, err := json.Marshal([][]byte{username, []byte(recipient), []byte(filename)})
-
 	if file[0][0] == OWNED {
+
+		// TODO: need to change naming convention here, cause problems with recipient "bo" with filename "balice_file"--think of malicious group of users for this one
+		recipientKey := hash(append([]byte(recipient+filename), password...))[:16]
+		// TODO: also need to change the naming convention here, cause problems with recipient "alicebo" with filename "balice_file"
+		index := marshal(username, []byte(recipient), []byte(filename))
+
 		// Update children
 		encryptedChildren := file[1]
 		zero := make([]byte, 16)
 		childrenKey := userlib.Argon2Key(password, zero, 16)
-		children := userlib.SymDec(childrenKey, encryptedChildren)
-		children = append(children, []byte(recipient)...)
+		marshalledChildren := userlib.SymDec(childrenKey, encryptedChildren)
+		children := unmarshal(marshalledChildren)
+		children = append(children, []byte(recipient))
+		marshalledChildren = marshal(children...)
+
 		iv := userlib.RandomBytes(16)
-		file[1] = userlib.SymEnc(childrenKey, iv, children)
+		file[1] = userlib.SymEnc(childrenKey, iv, marshalledChildren)
 
 		// Send the access token
 		salt := file[2]
@@ -72,11 +70,12 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 			return "", err
 		}
 
+		userlib.DatastoreSet(UUID, marshal(file...))
 		userlib.DatastoreSet(bytesToUUID(hash(index)), append(mac, encryptedKey...))
 
 		message = append(recipientKey, index...)
 
-	} else {
+	} else if file[0][0] == SHARED {
 
 		var ok bool
 		message, ok, err = userdata.asymDecrypt(userdata.Username, file[1])
@@ -86,6 +85,9 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 		if err != nil {
 			return "", err
 		}
+
+	} else {
+		return "", errors.New("file is neither shared nor owned")
 	}
 
 	encryptedMessage, err := userdata.asymEncrypt(recipient, message)
@@ -139,14 +141,9 @@ func (userdata *User) ReceiveFile(filename string, sender string,
 		return err
 	}
 
-	file := [][]byte{[]byte{1}, accessTokenBytes}
-	fileToBytes, err := json.Marshal(file)
-	if err != nil {
-		return err
-	}
-
-	uuid := bytesToUUID(hash([]byte(userdata.Username + filename)))
-	userlib.DatastoreSet(uuid, fileToBytes)
+	fileToBytes := marshal([]byte{1}, accessTokenBytes)
+	UUID := bytesToUUID(hash([]byte(userdata.Username + filename)))
+	userlib.DatastoreSet(UUID, fileToBytes)
 
 	return nil
 }
@@ -190,32 +187,64 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 	// - doug (and his future descendants) can still access the original file with key_a', but bob and cathy can no longer,
 	//   since they don't have access to key_a'
 
-	fileBytes, err := userdata.LoadFile(filename)
+	username := []byte(userdata.Username)
+	password := []byte(userdata.Password)
+
+	data, err := userdata.LoadFile(filename)
 	if err != nil {
 		return err
 	}
 
-	userdata.StoreFile(filename, fileBytes)
+	file, _, fileIndex, err := userdata.getFile(filename)
+	if err != nil {
+		return err
+	}
 
-	file, newKey, err := userdata.getFile(filename)
+	salt := userlib.RandomBytes(16)
+	k, err := userlib.HMACEval(salt, append(salt, password...))
+	k = k[:16]
+	iv := userlib.RandomBytes(16)
+	encryptedData := userlib.SymEnc(k, iv, data)
+
+	macKey, err := userlib.HashKDF(k, []byte("mac"))
+	if err != nil {
+		return err
+	}
+	macKey = macKey[:16]
+	mac, err := userlib.HMACEval(macKey, data)
 	if err != nil {
 		return err
 	}
 
 	encryptedChildren := file[1]
 	zero := make([]byte, 16)
-	childrenKey := userlib.Argon2Key([]byte(userdata.Password), zero, 16)
-	children := userlib.SymDec(childrenKey, encryptedChildren)
+	childrenKey := userlib.Argon2Key(password, zero, 16)
+	marshalledChildren := userlib.SymDec(childrenKey, encryptedChildren)
+	children := unmarshal(marshalledChildren)
+
+	newChildren := [][]byte{}
 
 	for _, item := range children {
 		child := string(item)
 		if child != targetUsername {
-			err = userdata.storeEncryptedKey(filename, child, newKey)
+			newChildren = append(newChildren, item)
+			err = userdata.storeEncryptedKey(filename, child, k)
 			if err != nil {
 				return err
 			}
+		} else {
+			index := marshal(username, []byte(targetUsername), []byte(filename))
+			userlib.DatastoreDelete(bytesToUUID(hash(index)))
 		}
 	}
+
+	marshalledChildren = marshal(newChildren...)
+	iv = userlib.RandomBytes(16)
+	encryptedChildren = userlib.SymEnc(childrenKey, iv, marshalledChildren)
+
+	fileToBytes := marshal(file[0], encryptedChildren, salt, append(mac, encryptedData...))
+	UUID := bytesToUUID(hash(fileIndex))
+	userlib.DatastoreSet(UUID, fileToBytes)
 
 	return nil
 }
