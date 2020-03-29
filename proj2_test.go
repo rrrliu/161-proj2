@@ -533,4 +533,15 @@ func TestSharingMisc(t *testing.T) {
 	}
 
 	// make sure than a user "alicebob" can't just get direct access to the file by having that username
+	alicebob, err := InitUser("alicebob", "i'm actually eve >:)")
+	if err != nil {
+		t.Error("Failed to initialize alicebob", err)
+		return
+	}
+
+	hehe, err := alicebob.LoadFile("alice_file")
+	if err == nil || hehe != nil {
+		t.Error("Eve can exploit the sharing system by having a clever username", err)
+		return
+	}
 }

@@ -26,7 +26,6 @@ import (
 	// Useful for debug messages, or string manipulation for datastore keys.
 
 	// Want to import errors.
-	"errors"
 
 	// Optional. You can remove the "_" there, but please do not touch
 	// anything else within the import bracket.
@@ -158,11 +157,9 @@ func (userdata *User) LoadFile(filename string) (data []byte, err error) {
 			return nil, err
 		}
 
-		if !userlib.HMACEqual(mac, validation) {
-			return nil, errors.New("data has been corrupted 3")
+		if userlib.HMACEqual(mac, validation) {
+			data = append(data, currentData...)
 		}
-
-		data = append(data, currentData...)
 	}
 
 	return data, nil

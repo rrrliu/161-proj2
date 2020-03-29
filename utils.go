@@ -197,6 +197,10 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, fileI
 	}
 	file = unmarshal(entry)
 
+	if len(file[0]) == 0 {
+		return nil, nil, nil, errors.New("file corrupted")
+	}
+
 	if file[0][0] == OWNED {
 
 		salt := file[2]
@@ -224,7 +228,7 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, fileI
 
 		encodedKeyEntry, exists := userlib.DatastoreGet(keyUUID)
 		if !exists {
-			return nil, nil, nil, errors.New("file does not exist")
+			return nil, nil, nil, errors.New("file does not exist or permission denied")
 		}
 
 		mac := encodedKeyEntry[:64]
@@ -251,7 +255,7 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, fileI
 		sharedFileUUID := bytesToUUID(hash(userFileIndex))
 		sharedFileEntry, exists := userlib.DatastoreGet(sharedFileUUID)
 		if !exists {
-			return nil, nil, nil, errors.New("file does not exist FFF")
+			return nil, nil, nil, errors.New("file does not exist")
 		}
 		sharedFile := unmarshal(sharedFileEntry)
 
