@@ -4,7 +4,6 @@ import (
 	// You neet to add with
 	// go get github.com/cs161-staff/userlib
 
-	"fmt"
 	"strings"
 
 	"github.com/cs161-staff/userlib"
@@ -547,14 +546,6 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 func hash(message []byte) []byte {
 	hash, _ := userlib.HMACEval(make([]byte, 16), message)
 	return hash
-}
-
-func printSlice(slice []byte) {
-	print("Length:", len(slice), "\n")
-	for _, n := range slice {
-		fmt.Printf("%2x", n)
-	}
-	print("\n")
 }
 
 func encryptPrivateKey(purpose string, privateKey userlib.PrivateKeyType, masterKey []byte) ([]byte, error) {
