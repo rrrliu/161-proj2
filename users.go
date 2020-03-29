@@ -98,10 +98,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 
 	userdata.DecKey = decKey
 	userdata.SignKey = signKey
-	userdata.SignKey = signKey
-	userdata.SignKey = signKey
-	userdata.SignKey = signKey
-	userdata.SignKey = signKey
+
 
 	userlib.KeystoreSet(username+"p", encKey)
 	userlib.KeystoreSet(username+"d", verifyKey)

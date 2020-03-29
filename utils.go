@@ -5,6 +5,7 @@ import (
 	// go get github.com/cs161-staff/userlib
 
 	"github.com/cs161-staff/userlib"
+	"github.com/google/uuid"
 
 	// Life is much easier with json:  You are
 	// going to want to use this so you can easily
@@ -18,7 +19,6 @@ import (
 	// so lets make life easier and use those too...
 	//
 	// You need to add with "go get github.com/google/uuid"
-	"github.com/google/uuid"
 
 	// Useful for debug messages, or string manipulation for datastore keys.
 	"strings"
@@ -118,17 +118,11 @@ func decryptPrivateKey(purpose string, encryptedPrivate, masterKey []byte) (priv
 
 func (userdata *User) storeEncryptedKey(filename, target string, key []byte) (err error) {
 	// TODO: change this index
-	index, err := json.Marshal([][]byte{
-		[]byte(userdata.Username),
-		[]byte(target),
-		[]byte(filename),
-	})
-	if err != nil {
-		return err
-	}
+	index := marshal([]byte(userdata.Username), []byte(target), []byte(filename))
+
 	// TODO: also change the recipientKey
 	recipientKey := hash(append([]byte(target+filename), userdata.Password...))[:16]
-	uuid := bytesToUUID(hash(index))
+	UUID := bytesToUUID(hash(index))
 
 	iv := userlib.RandomBytes(16)
 	encryptedKey := userlib.SymEnc(recipientKey, iv, key)
@@ -143,7 +137,7 @@ func (userdata *User) storeEncryptedKey(filename, target string, key []byte) (er
 		return err
 	}
 
-	userlib.DatastoreSet(uuid, append(mac, encryptedKey...))
+	userlib.DatastoreSet(UUID, append(mac, encryptedKey...))
 	return nil
 }
 
@@ -188,4 +182,105 @@ func (userdata *User) asymDecrypt(username string, encryptedMessage []byte) (mes
 	}
 
 	return message, true, nil
+}
+
+func (userdata *User) getFile(filename string) (file [][]byte, key []byte, err error) {
+
+	username := []byte(userdata.Username)
+	password := []byte(userdata.Password)
+
+	UUID := bytesToUUID(hash(append(username, filename...)))
+	entry, exists := userlib.DatastoreGet(UUID)
+	if !exists {
+		return nil, nil, errors.New("file does not exist")
+	}
+	file = unmarshal(entry)
+
+	if file[0][0] == OWNED {
+
+		salt := file[2]
+		k, err := userlib.HMACEval(salt, append(salt, password...))
+		k = k[:16]
+		if err != nil {
+			return nil, nil, err
+		}
+		return file, k[:16], nil
+
+	} else if file[0][0] == SHARED {
+		message, ok, err := userdata.asymDecrypt(userdata.Username, file[1])
+		if !ok {
+			return nil, nil, errors.New("data has been corrupted 1")
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+
+		recipientKey := message[:16]
+		marshalledFileInfo := message[16:]
+
+		keyUUID := bytesToUUID(hash(marshalledFileInfo))
+
+		encodedKeyEntry, exists := userlib.DatastoreGet(keyUUID)
+		if !exists {
+			return nil, nil, errors.New("file does not exist")
+		}
+
+		mac := encodedKeyEntry[:64]
+		encodedKey := encodedKeyEntry[64:]
+
+		k := userlib.SymDec(recipientKey, encodedKey)
+
+		macKey, err := userlib.HashKDF(recipientKey, []byte("mac"))
+		if err != nil {
+			return nil, nil, err
+		}
+		macKey = macKey[:16]
+		validation, err := userlib.HMACEval(macKey, k)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if !userlib.HMACEqual(mac, validation) {
+			return nil, nil, errors.New("data has been corrupted 2")
+		}
+
+		fileInfo := unmarshal(marshalledFileInfo)
+		sharedFileUUID := bytesToUUID(hash(append(fileInfo[0], fileInfo[2]...)))
+		sharedFileEntry, exists := userlib.DatastoreGet(sharedFileUUID)
+		if !exists {
+			return nil, nil, errors.New("file does not exist")
+		}
+		sharedFile := unmarshal(sharedFileEntry)
+
+		return sharedFile, k[:16], nil
+
+	} else {
+		return nil, nil, errors.New("could not calculate k")
+	}
+}
+
+func marshal(data ...[]byte) (marshalledData []byte) {
+
+	var dataArray [][]byte
+
+	for _, slice := range data {
+		dataArray = append(dataArray, slice)
+	}
+
+	marshalledData, err := json.Marshal(dataArray)
+	if err != nil {
+		panic(err)
+	}
+
+	return marshalledData
+}
+
+func unmarshal(marshalledData []byte) (data [][]byte) {
+
+	err := json.Unmarshal(marshalledData, &data)
+	if err != nil {
+		panic(err)
+	}
+
+	return data
 }
