@@ -21,8 +21,6 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 
 	username := []byte(userdata.Username)
 	password := []byte(userdata.Password)
-	privateKey := userdata.DecKey
-	// signKey := userdata.SignKey
 
 	// TODO: gotta change this too
 	UUID := bytesToUUID(hash(append(username, filename...)))
@@ -79,26 +77,18 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 		message = append(recipientKey, index...)
 
 	} else {
-		// Send the access token
-		ds := file[1][:64]
-		myAccessToken := file[1][64:]
-		verifyKey, ok := userlib.KeystoreGet(string(append(username, []byte("d")...)))
+
+		var ok bool
+		message, ok, err = userdata.asymDecrypt(userdata.Username, file[1])
 		if !ok {
-			return "", errors.New("sharer's verification key not found")
+			return "", errors.New("access token corrupted")
 		}
-
-		message, err = userlib.PKEDec(privateKey, myAccessToken)
-		if err != nil {
-			return "", err
-		}
-
-		err = userlib.DSVerify(verifyKey, ds, message)
 		if err != nil {
 			return "", err
 		}
 	}
 
-	encryptedMessage, err := userdata.asymEncrypt(recipient, append(recipientKey, index...))
+	encryptedMessage, err := userdata.asymEncrypt(recipient, message)
 	if err != nil {
 		return "", err
 	}
@@ -213,8 +203,9 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 	}
 
 	encryptedChildren := file[1]
-	passKey := []byte(userdata.Password)
-	children := userlib.SymDec(passKey, encryptedChildren)
+	zero := make([]byte, 16)
+	childrenKey := userlib.Argon2Key([]byte(userdata.Password), zero, 16)
+	children := userlib.SymDec(childrenKey, encryptedChildren)
 
 	for _, item := range children {
 		child := string(item)

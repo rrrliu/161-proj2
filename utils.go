@@ -168,7 +168,7 @@ func (userdata *User) asymDecrypt(username string, encryptedMessage []byte) (mes
 
 	verifyKey, ok := userlib.KeystoreGet(username + "d")
 	if !ok {
-		return nil, false, errors.New("sharer's verification key not found")
+		return nil, false, errors.New(username + "'s verification key not found")
 	}
 
 	message, err = userlib.PKEDec(privateKey, ciphertext)
