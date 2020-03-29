@@ -331,12 +331,12 @@ func TestRevoke(t *testing.T) {
 
 	// now we check to see whether each of bob and cathy can load the file or append to it
 	// by our method, they should not be able to load the file at all
-	bobLoadedFile, err := bob.LoadFile("bob_alice_file")
+	_, err = bob.LoadFile("bob_alice_file")
 	if err == nil {
 		t.Error("Bob was able to view the file after his access was revoked")
 		return
 	}
-	cathyLoadedFile, err := cathy.LoadFile("cathy_alice_file")
+	_, err = cathy.LoadFile("cathy_alice_file")
 	if err == nil {
 		t.Error("Cathy was able to view the file after her boss was revoked")
 		return
