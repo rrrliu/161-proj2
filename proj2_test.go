@@ -248,7 +248,7 @@ func TestShare_1(t *testing.T) {
 		return
 	}
 	if !reflect.DeepEqual(aliceFile, cathyAliceFile) {
-		t.Error("Shared file from alice is not the same", v, v2)
+		t.Error("Shared file from alice is not the same", aliceFile, cathyAliceFile)
 		return
 	}
 	cathyBobFile, err := cathy.LoadFile("cathy_bob_file")
@@ -257,7 +257,7 @@ func TestShare_1(t *testing.T) {
 		return
 	}
 	if !reflect.DeepEqual(aliceFile, cathyBobFile) {
-		t.Error("Shared file from bob is not the same", v, v2)
+		t.Error("Shared file from bob is not the same", aliceFile, cathyAliceFile)
 		return
 	}
 }
@@ -354,12 +354,12 @@ func TestRevoke(t *testing.T) {
 	}
 
 	// lastly, we check whether alice and david can still load and append
-	aliceLoadedFile, err := alice.LoadFile("alice_file")
+	_, err = alice.LoadFile("alice_file")
 	if err != nil {
 		t.Error("Alice could not access the file after revoking", err)
 		return
 	}
-	davidLoadedFile, err := david.LoadFile("david_alice_file")
+	_, err = david.LoadFile("david_alice_file")
 	if err != nil {
 		t.Error("David could not access the file even though his access was not revoked", err)
 		return
@@ -380,12 +380,12 @@ func TestRevoke(t *testing.T) {
 
 func TestInvalidUsername(t *testing.T) {
 	clear()
-	u, err := InitUser("alice", "fubar")
+	_, err := InitUser("alice", "fubar")
 	if err != nil {
 		t.Error("Failed to initialize alice", err)
 		return
 	}
-	u2, err2 := InitUser("alice", "foobar")
+	_, err2 := InitUser("alice", "foobar")
 	if err2 == nil {
 		t.Error("Created a user with the same username as another user")
 		return
