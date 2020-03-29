@@ -150,7 +150,7 @@ func TestShare(t *testing.T) {
 	u.StoreFile("file1", v)
 
 	var v2 []byte
-	var magic_string string
+	var magicString string
 
 	v, err = u.LoadFile("file1")
 	if err != nil {
@@ -158,12 +158,12 @@ func TestShare(t *testing.T) {
 		return
 	}
 
-	magic_string, err = u.ShareFile("file1", "bob")
+	magicString, err = u.ShareFile("file1", "bob")
 	if err != nil {
 		t.Error("Failed to share the a file", err)
 		return
 	}
-	err = u2.ReceiveFile("file2", "alice", magic_string)
+	err = u2.ReceiveFile("file2", "alice", magicString)
 	if err != nil {
 		t.Error("Failed to receive the share message", err)
 		return
@@ -179,4 +179,215 @@ func TestShare(t *testing.T) {
 		return
 	}
 
+}
+
+// in this test, alice shares to bob, then bob shares to cathy
+func TestShare_1(t *testing.T) {
+	clear()
+	alice, err := InitUser("alice", "alice")
+	if err != nil {
+		t.Error("Failed to initialize alice", err)
+		return
+	}
+	bob, err := InitUser("bob", "bob")
+	if err != nil {
+		t.Error("Failed to initialize bob", err)
+		return
+	}
+	cathy, err := InitUser("cathy", "cathy")
+	if err != nil {
+		t.Error("Failed to initialize cathy", err)
+		return
+	}
+
+	aliceFile := []byte("This is Alice's file")
+	alice.StoreFile("alice_file", aliceFile)
+	bobFile := []byte("This is Bob's file")
+	// we choose to call bob's other file this name to see if receiving a file overwrites existing file, which it should
+	bob.StoreFile("bob_alice_file", bobFile)
+
+	// bob sharing fictitious "bob_alice_file" to cathy with message, "This is Bob's file"
+	cathyAccessToken1, err := bob.ShareFile("bob_alice_file", "cathy")
+	if err != nil {
+		t.Error("Bob failed to share file with cathy", err)
+		return
+	}
+	err = cathy.ReceiveFile("cathy_bob_file", "bob", cathyAccessToken1)
+	if err != nil {
+		t.Error("Cathy could not receive bob's file", err)
+		return
+	}
+
+	// alice sharing "alice_file" with bob
+	bobAccessToken, err := alice.ShareFile("alice_file", "bob")
+	if err != nil {
+		t.Error("Failed to share alice's file with bob", err)
+		return
+	}
+	err = bob.ReceiveFile("bob_alice_file", "alice", bobAccessToken)
+	if err != nil {
+		t.Error("Bob could not receive alice's file", err)
+		return
+	}
+
+	// bob sharing his version of "alice_file" with cathy
+	cathyAccessToken2, err := bob.ShareFile("bob_alice_file", "cathy")
+	if err != nil {
+		t.Error("Bob failed to share alice's file with cathy", err)
+		return
+	}
+	err = cathy.ReceiveFile("cathy_alice_file", "bob", cathyAccessToken2)
+	if err != nil {
+		t.Error("Cathy could not receive alice's file through bob", err)
+		return
+	}
+
+	cathyAliceFile, err := cathy.LoadFile("cathy_alice_file")
+	if err != nil {
+		t.Error("Cathy ailed to download the alice file after sharing", err)
+		return
+	}
+	if !reflect.DeepEqual(aliceFile, cathyAliceFile) {
+		t.Error("Shared file from alice is not the same", v, v2)
+		return
+	}
+	cathyBobFile, err := cathy.LoadFile("cathy_bob_file")
+	if err != nil {
+		t.Error("Cathy failed to download the bob file after sharing", err)
+		return
+	}
+	if !reflect.DeepEqual(aliceFile, cathyBobFile) {
+		t.Error("Shared file from bob is not the same", v, v2)
+		return
+	}
+}
+
+// alice shares to bob and david, then bob shares to cathy
+func TestRevoke(t *testing.T) {
+	clear()
+	alice, err := InitUser("alice", "alice")
+	if err != nil {
+		t.Error("Failed to initialize alice", err)
+		return
+	}
+	bob, err := InitUser("bob", "bob")
+	if err != nil {
+		t.Error("Failed to initialize bob", err)
+		return
+	}
+	cathy, err := InitUser("cathy", "cathy")
+	if err != nil {
+		t.Error("Failed to initialize cathy", err)
+		return
+	}
+	david, err := InitUser("david", "david")
+	if err != nil {
+		t.Error("Failed to initialize david", err)
+		return
+	}
+
+	aliceFile := []byte("This is Alice's file")
+	alice.StoreFile("alice_file", aliceFile)
+
+	// sending to bob and david
+	bobAccessToken, err := alice.ShareFile("alice_file", "bob")
+	if err != nil {
+		t.Error("Failed to share alice's file with bob", err)
+		return
+	}
+	err = bob.ReceiveFile("bob_alice_file", "alice", bobAccessToken)
+	if err != nil {
+		t.Error("Bob could not receive alice's file", err)
+		return
+	}
+	davidAccessToken, err := alice.ShareFile("alice_file", "david")
+	if err != nil {
+		t.Error("Failed to share alice's file with david", err)
+		return
+	}
+	err = david.ReceiveFile("david_alice_file", "alice", davidAccessToken)
+	if err != nil {
+		t.Error("David could not receive alice's file", err)
+		return
+	}
+	// bob sending to cathy
+	cathyAccessToken, err := bob.ShareFile("bob_alice_file", "cathy")
+	if err != nil {
+		t.Error("Failed to share alice's file with cathy", err)
+		return
+	}
+	err = cathy.ReceiveFile("cathy_alice_file", "bob", cathyAccessToken)
+	if err != nil {
+		t.Error("Cathy could not receive alice's file", err)
+		return
+	}
+
+	// at this point, alice will revoke access to bob
+	err = alice.RevokeFile("alice_file", "bob")
+	if err != nil {
+		t.Error("Alice could not revoke from bob", err)
+		return
+	}
+
+	// now we check to see whether each of bob and cathy can load the file or append to it
+	// by our method, they should not be able to load the file at all
+	bobLoadedFile, err := bob.LoadFile("bob_alice_file")
+	if err == nil {
+		t.Error("Bob was able to view the file after his access was revoked")
+		return
+	}
+	cathyLoadedFile, err := cathy.LoadFile("cathy_alice_file")
+	if err == nil {
+		t.Error("Cathy was able to view the file after her boss was revoked")
+		return
+	}
+
+	err = bob.AppendFile("bob_alice_file", []byte{})
+	if err == nil {
+		t.Error("Bob was able to append to the file after his access was revoked ")
+		return
+	}
+	err = cathy.AppendFile("cathy_alice_file", []byte{})
+	if err == nil {
+		t.Error("Cathy was able to append to the file after her boss was revoked")
+		return
+	}
+
+	// lastly, we check whether alice and david can still load and append
+	aliceLoadedFile, err := alice.LoadFile("alice_file")
+	if err != nil {
+		t.Error("Alice could not access the file after revoking", err)
+		return
+	}
+	davidLoadedFile, err := david.LoadFile("david_alice_file")
+	if err != nil {
+		t.Error("David could not access the file even though his access was not revoked", err)
+		return
+	}
+
+	err = alice.AppendFile("alice_file", []byte{})
+	if err != nil {
+		t.Error("Alice could not append to the file after revoking", err)
+		return
+	}
+	err = david.AppendFile("david_alice_file", []byte{})
+	if err != nil {
+		t.Error("David could not append to the file even though his access was not revoked", err)
+		return
+	}
+
+}
+
+func TestInvalidUsername(t *testing.T) {
+	clear()
+	u, err := InitUser("alice", "fubar")
+	if err != nil {
+		t.Error("Failed to initialize alice", err)
+		return
+	}
+	u2, err2 := InitUser("alice", "foobar")
+	if err2 == nil {
+		t.Error("Created a user with the same username as another user")
+		return
+	}
 }

@@ -68,6 +68,11 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	data := hash(append(salt, password...))
 	value := append(salt, data...)
 
+	_, ok := userlib.DatastoreGet(UUID)
+	if ok != false {
+		return nil, errors.New("User already exists")
+	}
+
 	masterKey := userlib.Argon2Key([]byte(password), salt, 16)
 
 	macKey, err := userlib.HashKDF(masterKey, []byte("mac"))
