@@ -118,7 +118,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 		return nil, err
 	}
 
-	entry, err := json.Marshal([][]byte{mac, value, encryptedDec, encryptedSign})
+	entry := marshal(mac, value, encryptedDec, encryptedSign)
 	if err != nil {
 		return nil, err
 	}
@@ -136,11 +136,7 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	if !exists {
 		return nil, errors.New("user does not exist")
 	}
-	var contents [][]byte
-	err = json.Unmarshal(entry, &contents)
-	if err != nil {
-		return nil, err
-	}
+	contents := unmarshal(entry)
 
 	mac := contents[0]
 	saltyPassword := contents[1]
@@ -205,7 +201,8 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 	username := []byte(userdata.Username)
 	password := []byte(userdata.Password)
 
-	file, k, fileIndex, err := userdata.getFile(filename)
+	file, k, fileIndex, _, err := userdata.getFile(filename)
+
 	if err == nil {
 
 		iv := userlib.RandomBytes(16)
@@ -232,13 +229,22 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 		UUID := bytesToUUID(hash(userFileIndex))
 		salt := userlib.RandomBytes(16)
 
-		zero := make([]byte, 16)
-		childrenKey := userlib.Argon2Key(password, zero, 16)
-		iv := userlib.RandomBytes(16)
+		childrenKey := userlib.Argon2Key(password, salt, 16)
 		marshalledChildren := marshal()
+		iv := userlib.RandomBytes(16)
 		encryptedChildren := userlib.SymEnc(childrenKey, iv, marshalledChildren)
 
-		fileToBytes := marshal([]byte{OWNED}, encryptedChildren, salt)
+		childrenMacKey, err := userlib.HashKDF(childrenKey, []byte("mac"))
+		if err != nil {
+			panic(err)
+		}
+		childrenMacKey = childrenMacKey[:16]
+		childrenMac, err := userlib.HMACEval(childrenMacKey, marshalledChildren)
+		if err != nil {
+			panic(err)
+		}
+
+		fileToBytes := marshal([]byte{OWNED}, append(childrenMac, encryptedChildren...), salt)
 		userlib.DatastoreSet(UUID, fileToBytes)
 
 		userdata.AppendFile(filename, data)
@@ -252,7 +258,7 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 // metadata you need.
 func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 
-	file, k, fileIndex, err := userdata.getFile(filename)
+	file, k, fileIndex, _, err := userdata.getFile(filename)
 	if err != nil {
 		return err
 	}
@@ -287,7 +293,7 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 //
 // It should give an error if the file is corrupted in any way.
 func (userdata *User) LoadFile(filename string) (data []byte, err error) {
-	file, k, _, err := userdata.getFile(filename)
+	file, k, _, _, err := userdata.getFile(filename)
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +337,6 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 	username := []byte(userdata.Username)
 	password := []byte(userdata.Password)
 
-	// TODO: gotta change this too
 	userFileIndex := marshal(username, []byte(filename))
 	UUID := bytesToUUID(hash(userFileIndex))
 	entry, exists := userlib.DatastoreGet(UUID)
@@ -344,22 +349,44 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 
 	if file[0][0] == OWNED {
 
-		// TODO: need to change naming convention here, cause problems with recipient "bo" with filename "balice_file"--think of malicious group of users for this one
-		recipientKey := hash(append([]byte(recipient+filename), password...))[:16]
-		// TODO: also need to change the naming convention here, cause problems with recipient "alicebo" with filename "balice_file"
+		recipientKey := hash(marshal([]byte(recipient), []byte(filename), password))[:16]
 		index := marshal(username, []byte(recipient), []byte(filename))
 
-		// Update children
-		encryptedChildren := file[1]
-		zero := make([]byte, 16)
-		childrenKey := userlib.Argon2Key(password, zero, 16)
+		// get current children list and check with mac
+		childrenMac := file[1][:64]
+		encryptedChildren := file[1][64:]
+
+		childrenKey := userlib.Argon2Key(password, file[2], 16)
 		marshalledChildren := userlib.SymDec(childrenKey, encryptedChildren)
+
+		childrenMacKey, err := userlib.HashKDF(childrenKey, []byte("mac"))
+		if err != nil {
+			return "", err
+		}
+		childrenMacKey = childrenMacKey[:16]
+		validation, err := userlib.HMACEval(childrenMacKey, marshalledChildren)
+		if err != nil {
+			return "", err
+		}
+
+		if !userlib.HMACEqual(childrenMac, validation) {
+			return "", errors.New("list of children has been corrupted")
+		}
 		children := unmarshal(marshalledChildren)
+
+		// add new child
 		children = append(children, []byte(recipient))
 		marshalledChildren = marshal(children...)
 
+		childrenMac, err = userlib.HMACEval(childrenMacKey, marshalledChildren)
+		if err != nil {
+			return "", err
+		}
+
 		iv := userlib.RandomBytes(16)
-		file[1] = userlib.SymEnc(childrenKey, iv, marshalledChildren)
+		encryptedChildren = userlib.SymEnc(childrenKey, iv, marshalledChildren)
+
+		file[1] = append(childrenMac, encryptedChildren...)
 
 		// Send the access token
 		salt := file[2]
@@ -388,6 +415,11 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 
 	} else if file[0][0] == SHARED {
 
+		_, err = userdata.LoadFile(filename)
+		if err != nil {
+			return "", errors.New("user does not ahve access to file")
+		}
+
 		var ok bool
 		message, ok, err = userdata.asymDecrypt(userdata.Username, file[1])
 		if !ok {
@@ -415,6 +447,11 @@ func (userdata *User) ShareFile(filename string, recipient string) (accessToken 
 // it is authentically from the sender.
 func (userdata *User) ReceiveFile(filename string, sender string,
 	accessToken string) error {
+
+	_, _, _, _, err := userdata.getFile(filename)
+	if err == nil {
+		return errors.New("user already has a file of this name")
+	}
 
 	accessTokenBytes := []byte(accessToken)
 	message, ok, err := userdata.asymDecrypt(sender, accessTokenBytes)
@@ -448,9 +485,12 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 		return err
 	}
 
-	file, _, fileIndex, err := userdata.getFile(filename)
+	file, _, fileIndex, owned, err := userdata.getFile(filename)
 	if err != nil {
 		return err
+	}
+	if !owned {
+		return errors.New("user does not own the file and thus cannot revoke")
 	}
 
 	salt := userlib.RandomBytes(16)
@@ -469,13 +509,30 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 		return err
 	}
 
-	encryptedChildren := file[1]
-	zero := make([]byte, 16)
-	childrenKey := userlib.Argon2Key(password, zero, 16)
+	childrenMac := file[1][:64]
+	encryptedChildren := file[1][64:]
+
+	childrenKey := userlib.Argon2Key(password, file[2], 16)
 	marshalledChildren := userlib.SymDec(childrenKey, encryptedChildren)
+
+	childrenMacKey, err := userlib.HashKDF(childrenKey, []byte("mac"))
+	if err != nil {
+		return err
+	}
+	childrenMacKey = childrenMacKey[:16]
+	validation, err := userlib.HMACEval(childrenMacKey, marshalledChildren)
+	if err != nil {
+		return err
+	}
+
+	if !userlib.HMACEqual(childrenMac, validation) {
+		return errors.New("list of children has been corrupted")
+	}
+
 	children := unmarshal(marshalledChildren)
 
 	newChildren := [][]byte{}
+	childExists := false
 
 	for _, item := range children {
 		child := string(item)
@@ -486,16 +543,32 @@ func (userdata *User) RevokeFile(filename string, targetUsername string) (err er
 				return err
 			}
 		} else {
+			childExists = true
 			index := marshal(username, []byte(targetUsername), []byte(filename))
 			userlib.DatastoreDelete(bytesToUUID(hash(index)))
 		}
 	}
 
+	if !childExists {
+		return errors.New("revoked from user that was not a direct child")
+	}
+
+	childrenKey = userlib.Argon2Key(password, salt, 16)
 	marshalledChildren = marshal(newChildren...)
 	iv = userlib.RandomBytes(16)
 	encryptedChildren = userlib.SymEnc(childrenKey, iv, marshalledChildren)
 
-	fileToBytes := marshal(file[0], encryptedChildren, salt, append(mac, encryptedData...))
+	childrenMacKey, err = userlib.HashKDF(childrenKey, []byte("mac"))
+	if err != nil {
+		return err
+	}
+	childrenMacKey = childrenMacKey[:16]
+	childrenMac, err = userlib.HMACEval(childrenMacKey, marshalledChildren)
+	if err != nil {
+		return err
+	}
+
+	fileToBytes := marshal(file[0], append(childrenMac, encryptedChildren...), salt, append(mac, encryptedData...))
 	UUID := bytesToUUID(hash(fileIndex))
 	userlib.DatastoreSet(UUID, fileToBytes)
 
@@ -577,11 +650,9 @@ func decryptPrivateKey(purpose string, encryptedPrivate, masterKey []byte) (priv
 }
 
 func (userdata *User) storeEncryptedKey(filename string, target string, key []byte) (err error) {
-	// TODO: change this index
 	index := marshal([]byte(userdata.Username), []byte(target), []byte(filename))
 
-	// TODO: also change the recipientKey
-	recipientKey := hash(append([]byte(target+filename), userdata.Password...))[:16]
+	recipientKey := hash(marshal([]byte(target), []byte(filename), []byte(userdata.Password)))[:16]
 	UUID := bytesToUUID(hash(index))
 
 	iv := userlib.RandomBytes(16)
@@ -644,7 +715,7 @@ func (userdata *User) asymDecrypt(username string, encryptedMessage []byte) (mes
 	return message, true, nil
 }
 
-func (userdata *User) getFile(filename string) (file [][]byte, key []byte, fileIndex []byte, err error) {
+func (userdata *User) getFile(filename string) (file [][]byte, key []byte, fileIndex []byte, owned bool, err error) {
 
 	username := []byte(userdata.Username)
 	password := []byte(userdata.Password)
@@ -653,12 +724,12 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, fileI
 	UUID := bytesToUUID(hash(userFileIndex))
 	entry, exists := userlib.DatastoreGet(UUID)
 	if !exists {
-		return nil, nil, nil, errors.New("file does not exist")
+		return nil, nil, nil, false, errors.New("file does not exist")
 	}
 	file = unmarshal(entry)
 
 	if len(file[0]) == 0 {
-		return nil, nil, nil, errors.New("file corrupted")
+		return nil, nil, nil, false, errors.New("file corrupted")
 	}
 
 	if file[0][0] == OWNED {
@@ -667,18 +738,18 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, fileI
 		k, err := userlib.HMACEval(salt, append(salt, password...))
 		k = k[:16]
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, true, err
 		}
-		return file, k[:16], userFileIndex, nil
+		return file, k[:16], userFileIndex, true, nil
 
 	} else if file[0][0] == SHARED {
 
 		message, ok, err := userdata.asymDecrypt(userdata.Username, file[1])
 		if !ok {
-			return nil, nil, nil, errors.New("data has been corrupted 1")
+			return nil, nil, nil, false, errors.New("data has been corrupted 1")
 		}
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, false, err
 		}
 
 		recipientKey := message[:16]
@@ -688,7 +759,7 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, fileI
 
 		encodedKeyEntry, exists := userlib.DatastoreGet(keyUUID)
 		if !exists {
-			return nil, nil, nil, errors.New("file does not exist or permission denied")
+			return nil, nil, nil, false, errors.New("file does not exist or permission denied")
 		}
 
 		mac := encodedKeyEntry[:64]
@@ -698,16 +769,16 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, fileI
 
 		macKey, err := userlib.HashKDF(recipientKey, []byte("mac"))
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, false, err
 		}
 		macKey = macKey[:16]
 		validation, err := userlib.HMACEval(macKey, k)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, false, err
 		}
 
 		if !userlib.HMACEqual(mac, validation) {
-			return nil, nil, nil, errors.New("data has been corrupted 2")
+			return nil, nil, nil, false, errors.New("data has been corrupted 2")
 		}
 
 		fileInfo := unmarshal(marshalledFileInfo)
@@ -715,14 +786,14 @@ func (userdata *User) getFile(filename string) (file [][]byte, key []byte, fileI
 		sharedFileUUID := bytesToUUID(hash(userFileIndex))
 		sharedFileEntry, exists := userlib.DatastoreGet(sharedFileUUID)
 		if !exists {
-			return nil, nil, nil, errors.New("file does not exist")
+			return nil, nil, nil, false, errors.New("file does not exist")
 		}
 		sharedFile := unmarshal(sharedFileEntry)
 
-		return sharedFile, k[:16], marshal(fileInfo[0], fileInfo[2]), nil
+		return sharedFile, k[:16], marshal(fileInfo[0], fileInfo[2]), false, nil
 
 	} else {
-		return nil, nil, nil, errors.New("could not calculate k")
+		return nil, nil, nil, false, errors.New("could not calculate k")
 	}
 }
 
