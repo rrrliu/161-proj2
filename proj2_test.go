@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/cs161-staff/userlib"
+	"github.com/google/uuid"
 	_ "github.com/google/uuid"
 )
 
@@ -733,6 +734,16 @@ func TestSharingMisc(t *testing.T) {
 		t.Error("Revoked a nonexistent file")
 		return
 	}
+	_, err = alice.LoadFile("this_file_doesn't_exist")
+	if err == nil {
+		t.Error("Loaded a nonexistent file")
+		return
+	}
+	err = alice.AppendFile("this_file_doesn't_exist", []byte{})
+	if err == nil {
+		t.Error("Appended to a nonexistent file")
+		return
+	}
 
 	// make sure than a user "alicebob" can't just get direct access to the file by having that username
 	alicebob, err := InitUser("alicebob", "i'm actually eve >:)")
@@ -797,5 +808,200 @@ func TestDoubleShare(t *testing.T) {
 	if err != nil {
 		t.Error("Alice could not revoke access from cathy", err)
 		return
+	}
+}
+
+func TestMultipleInstances(t *testing.T) {
+	clear()
+	alice, err := InitUser("alice", "alice")
+	if err != nil {
+		t.Error("Failed to initialize alice", err)
+		return
+	}
+	_, err = InitUser("bob", "bob")
+	if err != nil {
+		t.Error("Failed to initialize bob", err)
+		return
+	}
+
+	bob1, err := GetUser("bob", "bob")
+	if err != nil {
+		t.Error("Failed to get bob", err)
+		return
+	}
+	bob2, err := GetUser("bob", "bob")
+	if err != nil {
+		t.Error("Failed to get bob twice", err)
+		return
+	}
+	bob3, err := GetUser("bob", "bob")
+	if err != nil {
+		t.Error("Failed to get bob thrice", err)
+		return
+	}
+	bob4, err := GetUser("bob", "bob")
+	if err != nil {
+		t.Error("Failed to get bob quadrice", err)
+		return
+	}
+
+	aliceFile := []byte("This is Alice's file")
+	filename := "alice_file"
+	alice.StoreFile(filename, aliceFile)
+
+	bobToken, err := alice.ShareFile(filename, "bob")
+	if err != nil {
+		t.Error("Failed to share with bob")
+		return
+	}
+
+	// Receive
+	err = bob1.ReceiveFile(filename, "alice", bobToken)
+	if err != nil {
+		t.Error("Failed to receive from alice")
+		return
+	}
+
+	// Load
+	_, err = bob2.LoadFile(filename)
+	if err != nil {
+		t.Error("Failed to load file")
+		return
+	}
+
+	// Append
+	err = bob3.AppendFile(filename, []byte{})
+	if err != nil {
+		t.Error("Failed to append to file", err)
+		return
+	}
+
+	// Share
+	cathy, err := InitUser("cathy", "cathy")
+	if err != nil {
+		t.Error("Failed to init Cathy", err)
+		return
+	}
+
+	cathytoken, err := bob4.ShareFile(filename, "cathy")
+	if err != nil {
+		t.Error("Failed to share", err)
+		return
+	}
+
+	err = cathy.ReceiveFile("c", "bob", cathytoken)
+	if err != nil {
+		t.Error("Cathy failed to receive", err)
+		return
+	}
+
+	_, err = cathy.LoadFile("c")
+	if err != nil {
+		t.Error("Cathy failed to load", err)
+		return
+	}
+}
+
+func TestMalicious(t *testing.T) {
+	clear()
+	_, err := InitUser("alice", "fubar")
+	if err != nil {
+		t.Error("Failed to initialize alice", err)
+		return
+	}
+	print("1\n")
+
+	// GetUser functionality
+	datastoreCopy := clearDatastore()
+	print("2\n")
+	alice, err := GetUser("alice", "alice")
+	if err == nil {
+		t.Error("GetUser did not detect change in datastore")
+		return
+	}
+	print("3\n")
+	restoreDatastore(datastoreCopy)
+	print("a\n")
+
+	aliceFile := []byte("This is Alice's file")
+	filename := "alice_file"
+	alice.StoreFile(filename, aliceFile)
+	print("4\n")
+
+	// LoadFile functionality
+	datastoreCopy = clearDatastore()
+	print("a\n")
+	_, err = alice.LoadFile(filename)
+	if err == nil {
+		t.Error("LoadFile did not detect change in datastore")
+		return
+	}
+	print("b\n")
+	restoreDatastore(datastoreCopy)
+	print("5\n")
+
+	// ShareFile functionality
+	bob, err := InitUser("bob", "bob")
+	if err != nil {
+		t.Error("Failed to initialize alice", err)
+		return
+	}
+
+	datastoreCopy = clearDatastore()
+	bobToken, err := alice.ShareFile(filename, "bob")
+	if err == nil {
+		t.Error("ShareFile did not detect change in datastore")
+		return
+	}
+	restoreDatastore(datastoreCopy)
+	print("6\n")
+
+	// ReceiveFile functionality
+	datastoreCopy = clearDatastore()
+	err = bob.ReceiveFile(filename, "alice", bobToken)
+	if err == nil {
+		t.Error("ReceiveFile did not detect change in datastore")
+		return
+	}
+	restoreDatastore(datastoreCopy)
+	print("7\n")
+
+	// RevokeFile functionality
+	datastoreCopy = clearDatastore()
+	err = alice.RevokeFile(filename, "bob")
+	if err == nil {
+		t.Error("ReceiveFile did not detect change in datastore")
+		return
+	}
+	restoreDatastore(datastoreCopy)
+}
+
+func clearDatastore() (datastoreCopy map[uuid.UUID][]byte) {
+	datastoreCopy = make(map[uuid.UUID][]byte)
+	datastore := userlib.DatastoreGetMap()
+
+	for k, v := range datastore {
+		datastoreCopy[k] = v
+		userlib.DatastoreSet(k, []byte{})
+	}
+
+	return datastoreCopy
+}
+
+func deleteDatastore() (datastoreCopy map[uuid.UUID][]byte) {
+	datastoreCopy = make(map[uuid.UUID][]byte)
+	datastore := userlib.DatastoreGetMap()
+
+	for k, v := range datastore {
+		datastoreCopy[k] = v
+		userlib.DatastoreDelete(k)
+	}
+
+	return datastoreCopy
+}
+
+func restoreDatastore(datastoreCopy map[uuid.UUID][]byte) {
+	for k, v := range datastoreCopy {
+		userlib.DatastoreSet(k, v)
 	}
 }
